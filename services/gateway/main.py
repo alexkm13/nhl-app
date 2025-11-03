@@ -417,10 +417,10 @@ async def shutdown():
     await app.state.redis.aclose()
 
 @app.get("/v1/games")
-async def list_games():
-    """List today's NHL games"""
+async def list_games(date: str = None):
+    """List NHL games for a specific date (YYYY-MM-DD) or today if not specified"""
     try:
-        schedule = await fetch_nhl_daily_schedule()
+        schedule = await fetch_nhl_daily_schedule(date)
         
         games = []
         games_list = schedule.get("games", []) if isinstance(schedule, dict) else []
