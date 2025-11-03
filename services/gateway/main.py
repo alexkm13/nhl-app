@@ -816,6 +816,61 @@ async def get_winprob_history(game_id: str):
         traceback.print_exc()
         return {"game_id": game_id, "data": []}
 
+@app.get("/v1/games/{game_id}/rosters")
+async def get_game_rosters(game_id: str):
+    """Get rosters for both teams in a game"""
+    try:
+        boxscore = await fetch_nhl_boxscore(game_id)
+        if not boxscore:
+            raise HTTPException(status_code=404, detail=f"Game {game_id} not found or boxscore unavailable")
+        
+        # Extract roster data
+        home_team = boxscore.get("homeTeam", {})
+        away_team = boxscore.get("awayTeam", {})
+        
+        # Get roster from boxscore
+        # Structure: boxscore.awayTeam.roster.roster or boxscore.homeTeam.roster.roster
+        home_roster_data = home_team.get("roster", {})
+        away_roster_data = away_team.get("roster", {})
+        
+        home_roster = home_roster_data.get("roster", []) if isinstance(home_roster_data, dict) else []
+        away_roster = away_roster_data.get("roster", []) if isinstance(away_roster_data, dict) else []
+        
+        # Format roster players
+        def format_player(player):
+            """Format player data from roster"""
+            return {
+                "id": player.get("playerId"),
+                "name": player.get("firstName", {}).get("default", "") + " " + player.get("lastName", {}).get("default", ""),
+                "position": player.get("position"),
+                "number": player.get("sweaterNumber"),
+            }
+        
+        home_roster_formatted = [format_player(p) for p in home_roster if p.get("playerId")]
+        away_roster_formatted = [format_player(p) for p in away_roster if p.get("playerId")]
+        
+        return {
+            "game_id": game_id,
+            "home_team": {
+                "id": home_team.get("id"),
+                "name": home_team.get("commonName", {}).get("default", ""),
+                "abbrev": home_team.get("abbrev", ""),
+                "logo": home_team.get("logo", ""),
+                "roster": home_roster_formatted
+            },
+            "away_team": {
+                "id": away_team.get("id"),
+                "name": away_team.get("commonName", {}).get("default", ""),
+                "abbrev": away_team.get("abbrev", ""),
+                "logo": away_team.get("logo", ""),
+                "roster": away_roster_formatted
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching rosters: {str(e)}")
+
 @app.get("/v1/games/{game_id}/winprob/friendly")
 async def get_winprob_friendly(game_id: str):
     """Human-readable win probability with percentages and game score"""
@@ -1387,6 +1442,9 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 desc_key = details.get("descKey", "").lower()  # fighting, slashing, etc.
                 duration = details.get("duration", 0)
                 
+                # Check if this is a "too many men" penalty
+                is_too_many_men = desc_key == "too-many-men" or "too-many-men" in desc_key
+                
                 # Format penalty description
                 penalty_type_map = {
                     "fighting": "fighting",
@@ -1410,6 +1468,14 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                     event_desc = f"{duration} min {penalty_desc} penalty"
                 else:
                     event_desc = f"{penalty_desc} penalty"
+                
+                # For "too many men" penalties, use team name instead of player name
+                if is_too_many_men:
+                    team_name = home_team if team == "HOME" else away_team
+                    player_name = team_name  # Replace player with team name
+                else:
+                    # For other penalties, keep using player name (set earlier)
+                    pass
                 
                 # Add drawn by player if available
                 drawn_by_id = details.get("drawnByPlayerId")
