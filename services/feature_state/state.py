@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 
@@ -10,6 +10,7 @@ class GameState(BaseModel):
     strength: Literal["EV", "PP", "PK", "EN", "ENPP", "ENPK", "SH"] = "EV"
     empty_net: bool = False
     last_event: str = "FACEOFF"
+    last_player_id: Optional[int] = None
 
     def goal(self, team: str):
         if team == "HOME":

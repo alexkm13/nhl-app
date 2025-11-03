@@ -5,6 +5,7 @@ import random
 import subprocess
 from datetime import datetime
 
+import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -23,6 +24,40 @@ if os.path.exists(static_dir):
 
 # Initialize NHL client
 nhl_client = NHLClient()
+
+# Player name cache
+_player_cache = {}
+
+async def get_player_name(player_id: int) -> str:
+    """Get player name from NHL API"""
+    if not player_id:
+        return "Unknown Player"
+    
+    # Check cache first
+    if player_id in _player_cache:
+        return _player_cache[player_id]
+    
+    try:
+        # Use NHL API public endpoint
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"https://api-web.nhle.com/v1/player/{player_id}/landing",
+                timeout=5.0
+            )
+            if response.status_code == 200:
+                data = response.json()
+                # Extract player name
+                first_name = data.get("firstName", {}).get("default", "")
+                last_name = data.get("lastName", {}).get("default", "")
+                if first_name and last_name:
+                    name = f"{first_name} {last_name}"
+                    _player_cache[player_id] = name
+                    return name
+    except Exception as e:
+        print(f"[gateway] Error fetching player {player_id}: {e}")
+    
+    # Fallback
+    return f"Player {player_id}"
 
 @app.get("/")
 async def root():
@@ -216,6 +251,19 @@ async def run_ingestion(game_id: str, redis: Redis):
             x = details.get("xCoordInFeet", random.uniform(-100, 100))
             y = details.get("yCoordInFeet", random.uniform(-42.5, 42.5))
             
+            # Extract player ID based on event type
+            player_id = None
+            if mapped_type == "FACEOFF":
+                player_id = details.get("winningPlayerId")
+            elif mapped_type == "GOAL":
+                player_id = details.get("scoringPlayerId")
+            elif mapped_type in ["SHOT", "BLOCK"]:
+                player_id = details.get("shootingPlayerId")
+            elif mapped_type == "HIT":
+                player_id = details.get("hittingPlayerId")
+            elif mapped_type == "PENALTY":
+                player_id = details.get("playerId")
+            
             # Create event
             event = {
                 "game_id": game_id,
@@ -224,6 +272,7 @@ async def run_ingestion(game_id: str, redis: Redis):
                 "event_type": mapped_type,
                 "strength": strength,
                 "empty_net": empty_net,
+                "player_id": player_id,
                 "x": x,
                 "y": y,
                 "shot_quality": random.random(),
@@ -436,6 +485,13 @@ async def get_winprob_friendly(game_id: str):
         empty_net_str = state.get("empty_net", "False")
         empty_net = empty_net_str.lower() == "true" if isinstance(empty_net_str, str) else bool(empty_net_str)
         last_event = state.get("last_event", "Unknown")
+        last_player_id_str = state.get("last_player_id", "")
+        last_player_id = int(last_player_id_str) if last_player_id_str and last_player_id_str != "None" else None
+        
+        # Look up player name
+        last_player_name = None
+        if last_player_id:
+            last_player_name = await get_player_name(last_player_id)
         
         # Get team names dynamically from NHL API
         try:
@@ -503,7 +559,8 @@ async def get_winprob_friendly(game_id: str):
             "current_situation": {
                 "strength": situation_description,
                 "empty_net": empty_net,
-                "last_event": last_event
+                "last_event": last_event,
+                "last_player": last_player_name
             },
             "win_probability": {
                 home_team: round(p_home * 100, 1),

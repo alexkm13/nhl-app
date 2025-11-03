@@ -282,6 +282,19 @@ async def produce_nhl_game(r: Redis, nhl_client: NHLClient, game_id: str):
         x = details.get("xCoordInFeet", random.uniform(-100, 100))
         y = details.get("yCoordInFeet", random.uniform(-42.5, 42.5))
         
+        # Extract player ID based on event type
+        player_id = None
+        if mapped_type == "FACEOFF":
+            player_id = details.get("winningPlayerId")
+        elif mapped_type == "GOAL":
+            player_id = details.get("scoringPlayerId")
+        elif mapped_type in ["SHOT", "BLOCK"]:
+            player_id = details.get("shootingPlayerId")
+        elif mapped_type == "HIT":
+            player_id = details.get("hittingPlayerId")
+        elif mapped_type == "PENALTY":
+            player_id = details.get("playerId")
+        
         payload = GameEvent(
             game_id=game_id,
             ts=timestamp,
@@ -289,6 +302,7 @@ async def produce_nhl_game(r: Redis, nhl_client: NHLClient, game_id: str):
             event_type=mapped_type,
             strength=strength,
             empty_net=empty_net,
+            player_id=player_id,
             x=x,
             y=y,
             shot_quality=random.random(),

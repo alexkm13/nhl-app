@@ -13,6 +13,7 @@ class GameEvent(BaseModel):
     event_type: EventType
     strength: Strength = "EV"
     empty_net: bool = False
+    player_id: Optional[int] = None
     x: Optional[float] = None
     y: Optional[float] = None
     shot_quality: Optional[float] = None

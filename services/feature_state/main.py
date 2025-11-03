@@ -46,6 +46,7 @@ async def process_events():
                     ts = payload["ts"]
                     strength = payload.get("strength", "EV")
                     empty_net = payload.get("empty_net", False)
+                    player_id = payload.get("player_id")
 
                     # Check if we need to reset this game's state (new ingestion)
                     reset_flag = await r.get(f"reset_game:{game_id}")
@@ -68,6 +69,7 @@ async def process_events():
                     state.strength = strength
                     state.empty_net = empty_net
                     state.last_event = ev
+                    state.last_player_id = player_id
                     if ev == "GOAL":
                         state.goal(team)
 

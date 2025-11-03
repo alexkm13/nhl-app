@@ -470,7 +470,9 @@
                     <div class="situation">
                         <div class="situation-label">Current Situation</div>
                         <div class="situation-value">${situation.strength}${situation.empty_net && !situation.strength.toLowerCase().includes('empty net') ? ' 🚪 Empty Net' : ''}</div>
-                        <div class="situation-value" style="font-size: 0.9em; margin-top: 5px; opacity: 0.9;">Last Event: ${situation.last_event}</div>
+                        <div class="situation-value" style="font-size: 0.9em; margin-top: 5px; opacity: 0.9;">
+                            Last Event: ${situation.last_event}${situation.last_player ? ` by ${situation.last_player}` : ''}
+                        </div>
                     </div>
 
                     <div class="win-prob">
