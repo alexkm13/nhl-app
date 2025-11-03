@@ -438,7 +438,12 @@
         <p class="subtitle">Enter a game ID to view win probabilities and game statistics</p>
 
         <div class="input-group">
-            <label for="gameId">Game ID</label>
+            <label for="gameSelector">Select Game</label>
+            <select id="gameSelector" onchange="selectGame(this.value)" style="width: 100%; padding: 12px 16px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 16px; margin-bottom: 10px;">
+                <option value="">-- Select a game --</option>
+            </select>
+            <div style="text-align: center; margin: 10px 0; color: #666;">OR</div>
+            <label for="gameId">Enter Game ID</label>
             <input type="text" id="gameId" placeholder="e.g., 2025020161" />
         </div>
 
@@ -453,6 +458,37 @@
 
     <script>
         const API_BASE = window.location.origin;
+
+        // Load games list on page load
+        window.addEventListener('DOMContentLoaded', async function() {
+            await loadGamesList();
+        });
+
+        async function loadGamesList() {
+            try {
+                const response = await fetch(`${API_BASE}/v1/games`);
+                const games = await response.json();
+
+                const selector = document.getElementById('gameSelector');
+                if (selector && Array.isArray(games)) {
+                    games.forEach(game => {
+                        const option = document.createElement('option');
+                        option.value = game.game_id;
+                        option.textContent = `${game.away_team} @ ${game.home_team} (${game.game_id})`;
+                        selector.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.error('Error loading games list:', error);
+            }
+        }
+
+        function selectGame(gameId) {
+            if (gameId) {
+                document.getElementById('gameId').value = gameId;
+                startIngestion();
+            }
+        }
 
         async function startIngestion() {
             const gameId = document.getElementById('gameId').value.trim();

@@ -586,64 +586,91 @@ async def get_playbyplay(game_id: str, limit: int = 50):
         # Read events from the stream
         stream_events = await r.xrevrange(stream_key, count=1000)
         
-        # Filter events for this game and format them
+        # Filter and collect events for this game first
+        raw_events = []
         for event_id, fields in stream_events:
             try:
                 event_data = json.loads(fields.get("json", "{}"))
                 if event_data.get("game_id") == game_id:
-                    # Get player name if available
-                    player_id = event_data.get("player_id")
-                    player_name = None
-                    if player_id:
-                        player_name = await get_player_name(player_id)
-                    
-                    # Format event description
-                    event_type = event_data.get("event_type", "UNKNOWN")
-                    event_desc = event_type
-                    if event_type == "FACEOFF":
-                        event_desc = "Faceoff won"
-                    elif event_type == "GOAL":
-                        event_desc = "Goal"
-                    elif event_type == "SHOT":
-                        event_desc = "Shot on goal"
-                    elif event_type == "BLOCK":
-                        event_desc = "Shot blocked"
-                    elif event_type == "HIT":
-                        event_desc = "Hit"
-                    elif event_type == "PENALTY":
-                        event_desc = "Penalty"
-                    
-                    # Get team info
-                    team = event_data.get("team", "UNKNOWN")
-                    
-                    # Calculate time elapsed (event is in absolute timestamp)
-                    ts = event_data.get("ts", 0)
-                    
-                    # Get current state for score
-                    state_key = f"state:{game_id}"
-                    state = await r.hgetall(state_key)
-                    
-                    events.append({
-                        "id": event_id,
-                        "timestamp": ts,
-                        "event_type": event_type,
-                        "description": event_desc,
-                        "player": player_name,
-                        "player_id": player_id,
-                        "team": team,
-                        "strength": event_data.get("strength", "EV"),
-                        "empty_net": event_data.get("empty_net", False),
-                        "home_score": int(state.get("home_score", 0)),
-                        "away_score": int(state.get("away_score", 0)),
-                    })
-                    
-                    if len(events) >= limit:
+                    raw_events.append((event_id, event_data))
+                    if len(raw_events) >= limit:
                         break
             except Exception as e:
                 print(f"[gateway] Error parsing event: {e}")
                 continue
         
-        # Sort by timestamp (most recent first)
+        # Sort by timestamp (oldest first) for score tracking
+        raw_events.sort(key=lambda x: x[1].get("ts", 0))
+        
+        # Track score progression chronologically
+        home_score = 0
+        away_score = 0
+        
+        # Process events and format them
+        for event_id, event_data in raw_events:
+            # Update score if this is a goal (before adding event)
+            event_type = event_data.get("event_type", "UNKNOWN")
+            team = event_data.get("team", "UNKNOWN")
+            
+            # Get player name if available
+            player_id = event_data.get("player_id")
+            player_name = None
+            if player_id:
+                player_name = await get_player_name(player_id)
+            
+            # Format event description
+            event_desc = event_type
+            if event_type == "FACEOFF":
+                event_desc = "Faceoff won"
+            elif event_type == "GOAL":
+                event_desc = "Goal"
+            elif event_type == "SHOT":
+                event_desc = "Shot on goal"
+            elif event_type == "BLOCK":
+                event_desc = "Shot blocked"
+            elif event_type == "HIT":
+                event_desc = "Hit"
+            elif event_type == "PENALTY":
+                event_desc = "Penalty"
+            
+            # Calculate time elapsed (event is in absolute timestamp)
+            ts = event_data.get("ts", 0)
+            
+            # For goals, show score after the goal
+            if event_type == "GOAL":
+                if team == "HOME":
+                    display_home_score = home_score + 1
+                    display_away_score = away_score
+                else:
+                    display_home_score = home_score
+                    display_away_score = away_score + 1
+            else:
+                display_home_score = home_score
+                display_away_score = away_score
+            
+            # Add event with current/updated score
+            events.append({
+                "id": event_id,
+                "timestamp": ts,
+                "event_type": event_type,
+                "description": event_desc,
+                "player": player_name,
+                "player_id": player_id,
+                "team": team,
+                "strength": event_data.get("strength", "EV"),
+                "empty_net": event_data.get("empty_net", False),
+                "home_score": display_home_score,
+                "away_score": display_away_score,
+            })
+            
+            # Update score after this event (for next event)
+            if event_type == "GOAL":
+                if team == "HOME":
+                    home_score += 1
+                else:
+                    away_score += 1
+        
+        # Sort by timestamp (most recent first) for display
         events.sort(key=lambda x: x["timestamp"], reverse=True)
         
         # Get game info for team names
