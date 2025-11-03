@@ -761,6 +761,18 @@ button:disabled {
     height: 200px;
 }
 
+.win-prob-graph-logo {
+    width: 24px;
+    height: 24px;
+    object-fit: contain;
+}
+
+.win-prob-graph-abbrev {
+    font-size: 0.85em;
+    color: #888;
+    font-weight: 500;
+}
+
 .tabs {
     display: flex;
     gap: 10px;

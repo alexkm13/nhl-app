@@ -445,7 +445,7 @@
 
                     <div class="win-prob">
                         <div class="win-prob-title">Win Probability</div>
-                        ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, false)}
+                        ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, false, finalHomeLogo, finalAwayLogo)}
                     </div>
 
                     <div id="playbyplay-feed" class="playbyplay-feed">
@@ -504,7 +504,7 @@
 
                 <div class="win-prob">
                     <div class="win-prob-title">Win Probability</div>
-                    ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive)}
+                    ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive, homeLogo, awayLogo)}
                 </div>
 
                 <div id="playbyplay-feed" class="playbyplay-feed">
@@ -525,7 +525,7 @@
             status.style.display = 'block';
         }
 
-        function generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive) {
+        function generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive, homeLogo = '', awayLogo = '') {
             // Determine graph dimensions
             const width = 600;
             const height = 200;
@@ -583,14 +583,15 @@
                 }
             }
             
-            // Create area under curve for inverse team
+            // Create area above line for away team probability (inverse of home team)
+            // The area should fill from the line up to the top
             let areaPath = '';
             if (points.length > 0) {
-                areaPath = `M ${points[0].x} ${height - padding.bottom}`;
+                areaPath = `M ${points[0].x} ${padding.top}`;
                 for (let i = 0; i < points.length; i++) {
                     areaPath += ` L ${points[i].x} ${points[i].y}`;
                 }
-                areaPath += ` L ${points[points.length - 1].x} ${height - padding.bottom} Z`;
+                areaPath += ` L ${points[points.length - 1].x} ${padding.top} Z`;
             }
             
             // Determine period markers
@@ -607,29 +608,46 @@
                 periods.push({ x: padding.left + chartWidth, label: '3rd' });
             }
             
+            // Get team abbreviations (first 3 letters)
+            const homeAbbrev = homeTeam.substring(0, 3).toUpperCase();
+            const awayAbbrev = awayTeam.substring(0, 3).toUpperCase();
+            
+            // Get the last point for the circle
+            const lastPoint = points[points.length - 1];
+            
             return `
                 <div class="win-prob-graph-container">
                     <div class="win-prob-graph-labels">
                         <div class="win-prob-graph-team-left">
-                            <span>${homeTeam}</span>
-                            <span class="win-prob-graph-percentage">${homeProb}%</span>
+                            ${homeLogo ? `<img src="${homeLogo}" alt="${homeTeam}" class="win-prob-graph-logo" onerror="this.style.display='none'">` : ''}
+                            <span class="win-prob-graph-percentage">${homeProb.toFixed(1)}%</span>
+                            <span class="win-prob-graph-abbrev">-- ${homeAbbrev}</span>
                         </div>
                         <div class="win-prob-graph-team-right">
-                            <span class="win-prob-graph-percentage">${awayProb}%</span>
-                            <span>${awayTeam}</span>
+                            <span class="win-prob-graph-abbrev">${awayAbbrev} --</span>
+                            <span class="win-prob-graph-percentage">${awayProb.toFixed(1)}%</span>
+                            ${awayLogo ? `<img src="${awayLogo}" alt="${awayTeam}" class="win-prob-graph-logo" onerror="this.style.display='none'">` : ''}
                         </div>
                     </div>
                     <svg class="win-prob-graph" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+                        <!-- Y-axis labels -->
+                        <text x="${padding.left - 10}" y="${padding.top + 5}" text-anchor="end" font-size="10" fill="#888">100</text>
+                        <text x="${padding.left - 10}" y="${padding.top + chartHeight / 2 + 5}" text-anchor="end" font-size="10" fill="#888">50</text>
+                        <text x="${padding.left - 10}" y="${height - padding.bottom + 5}" text-anchor="end" font-size="10" fill="#888">100</text>
+                        
                         <!-- Grid lines -->
                         <line x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${height - padding.bottom}" stroke="#333" stroke-width="1"/>
                         <line x1="${padding.left}" y1="${height - padding.bottom}" x2="${width - padding.right}" y2="${height - padding.bottom}" stroke="#333" stroke-width="1"/>
                         <line x1="${padding.left}" y1="${padding.top + chartHeight / 2}" x2="${width - padding.right}" y2="${padding.top + chartHeight / 2}" stroke="#333" stroke-width="1" stroke-dasharray="2,2"/>
                         
-                        <!-- Area under curve for away team probability -->
-                        <path d="${areaPath}" fill="#2a2a2a" opacity="0.3"/>
+                        <!-- Shaded area above line for away team probability -->
+                        <path d="${areaPath}" fill="#444" opacity="0.4"/>
                         
-                        <!-- Line for home team probability -->
-                        <path d="${path}" fill="none" stroke="#ff4d6d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <!-- Black line for home team probability -->
+                        <path d="${path}" fill="none" stroke="#000000" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                        
+                        <!-- Large circle at the end of the line -->
+                        ${lastPoint ? `<circle cx="${lastPoint.x}" cy="${lastPoint.y}" r="6" fill="#000000" stroke="#000000" stroke-width="2"/>` : ''}
                         
                         <!-- Period markers -->
                         ${periods.map(p => `
