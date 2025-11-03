@@ -164,10 +164,10 @@ async def get_player_names_batch(player_ids: list, redis: Redis = None) -> dict:
                         if redis:
                             await redis.setex(f"player_name:{pid}", 86400, name)
                         return pid, name
-            elif response.status_code == 404:
-                print(f"[gateway] Player {pid} not found in NHL API")
-            else:
-                print(f"[gateway] NHL API error {response.status_code} for player {pid}")
+                elif response.status_code == 404:
+                    print(f"[gateway] Player {pid} not found in NHL API")
+                else:
+                    print(f"[gateway] NHL API error {response.status_code} for player {pid}")
         except httpx.TimeoutException:
             print(f"[gateway] Timeout fetching player {pid}")
         except Exception as e:
@@ -1036,13 +1036,17 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 else:
                     away_score += 1
             
-            # Add event
+            # Add event - ensure player_name has a fallback
+            final_player_name = player_name
+            if not final_player_name and player_id:
+                final_player_name = f"Player {player_id}"
+            
             event_data = {
                 "id": f"{game_id}-{play.get('eventId', len(events))}",
                 "timestamp": timestamp,
                 "event_type": mapped_type,
                 "description": event_desc,
-                "player": player_name,
+                "player": final_player_name,
                 "player_id": player_id,
                 "team": team,
                 "strength": strength,
