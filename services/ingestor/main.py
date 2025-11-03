@@ -85,17 +85,17 @@ async def fetch_nhl_game_data(nhl_client: NHLClient, game_id: str):
     """Fetch live or completed NHL game data"""
     try:
         # Try to get play-by-play data
-        plays = nhl_client.game_center.play_by_play(game_id)
+        game_data = nhl_client.game_center.play_by_play(game_id)
         
-        if plays and isinstance(plays, dict):
-            # Convert to list if needed
-            if "events" in plays:
-                plays = plays["events"]
-            elif "plays" in plays:
-                plays = plays["plays"]
+        if not game_data or not isinstance(game_data, dict):
+            return None
         
-        if plays:
-            return {"plays": plays if isinstance(plays, list) else []}
+        # Extract plays list
+        plays = game_data.get("plays", [])
+        
+        if isinstance(plays, list) and len(plays) > 0:
+            # Return full game data including team IDs
+            return game_data
         
         # Try boxscore as fallback
         boxscore = nhl_client.game_center.boxscore(game_id)
@@ -126,6 +126,10 @@ async def produce_nhl_game(r: Redis, nhl_client: NHLClient, game_id: str):
         await produce_synthetic_game(r, game_id)
         return
     
+    # Get team IDs once
+    home_team_id = game_data.get("homeTeam", {}).get("id")
+    away_team_id = game_data.get("awayTeam", {}).get("id")
+    
     print(f"[ingestor] Processing {len(plays)} events from NHL API")
     
     # Process real NHL events
@@ -153,9 +157,18 @@ async def produce_nhl_game(r: Redis, nhl_client: NHLClient, game_id: str):
         if mapped_type == "SHOT" and type_desc == "missed-shot":
             mapped_type = "SHOT"  # Keep as SHOT
         
-        # Determine team
+        # Determine team from event owner
         details = play.get("details", {})
-        team = "HOME" if details.get("homeTeamDefendingSide") else "AWAY"
+        event_owner_id = details.get("eventOwnerTeamId")
+        
+        # Match event owner to home/away
+        if event_owner_id == home_team_id:
+            team = "HOME"
+        elif event_owner_id == away_team_id:
+            team = "AWAY"
+        else:
+            # Fallback to defending side if eventOwnerTeamId not available
+            team = "HOME" if details.get("homeTeamDefendingSide") else "AWAY"
         
         # Get situation/strength
         situation = play.get("situationCode", "1551")  # e.g., "1551" = 5v5
