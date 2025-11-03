@@ -779,30 +779,32 @@ async def get_playbyplay(game_id: str, limit: int = 30):
             if type_code in [520, 516, 517, 524]:  # Skip period-start, stoppage, period-end, game-end
                 continue
             
+            # Only process GOAL (505) and PENALTY (509) events
+            if type_code not in [505, 509]:
+                continue
+            
             mapped_type = type_mapping.get(type_code, "SHOT")
             details = play.get("details", {})
             
-            # Extract player IDs
-            if mapped_type == "FACEOFF":
-                pid = details.get("winningPlayerId")
-                if pid:
-                    player_ids.add(pid)
-            elif mapped_type == "GOAL":
+            # Extract player IDs for goals
+            if mapped_type == "GOAL":
                 pid = details.get("scoringPlayerId")
                 if pid:
                     player_ids.add(pid)
-            elif mapped_type in ["SHOT", "BLOCK"]:
-                pid = details.get("shootingPlayerId")
-                if pid:
-                    player_ids.add(pid)
-            elif mapped_type == "HIT":
-                pid = details.get("hittingPlayerId")
-                if pid:
-                    player_ids.add(pid)
+                # Also get assist player IDs
+                assist1 = details.get("assist1PlayerId")
+                if assist1:
+                    player_ids.add(assist1)
+                assist2 = details.get("assist2PlayerId")
+                if assist2:
+                    player_ids.add(assist2)
             elif mapped_type == "PENALTY":
-                pid = details.get("playerId")
+                pid = details.get("committedByPlayerId")
                 if pid:
                     player_ids.add(pid)
+                drawn = details.get("drawnByPlayerId")
+                if drawn:
+                    player_ids.add(drawn)
             
             processed_plays.append(play)
         
@@ -831,18 +833,23 @@ async def get_playbyplay(game_id: str, limit: int = 30):
             
             # Get player info
             player_id = None
-            if mapped_type == "FACEOFF":
-                player_id = details.get("winningPlayerId")
-            elif mapped_type == "GOAL":
-                player_id = details.get("scoringPlayerId")
-            elif mapped_type in ["SHOT", "BLOCK"]:
-                player_id = details.get("shootingPlayerId")
-            elif mapped_type == "HIT":
-                player_id = details.get("hittingPlayerId")
-            elif mapped_type == "PENALTY":
-                player_id = details.get("playerId")
+            assist1_player_id = None
+            assist2_player_id = None
+            assist1_name = None
+            assist2_name = None
             
-            player_name = player_names.get(player_id) if player_id else None
+            if mapped_type == "GOAL":
+                player_id = details.get("scoringPlayerId")
+                assist1_player_id = details.get("assist1PlayerId")
+                assist2_player_id = details.get("assist2PlayerId")
+                player_name = player_names.get(player_id) if player_id else None
+                assist1_name = player_names.get(assist1_player_id) if assist1_player_id else None
+                assist2_name = player_names.get(assist2_player_id) if assist2_player_id else None
+            elif mapped_type == "PENALTY":
+                player_id = details.get("committedByPlayerId")
+                player_name = player_names.get(player_id) if player_id else None
+            else:
+                player_name = None
             
             # Get strength situation
             situation = play.get("situationCode", "1551")
@@ -900,20 +907,86 @@ async def get_playbyplay(game_id: str, limit: int = 30):
             else:
                 timestamp = time.time()
             
-            # Format event description
+            # Format descriptive event description
             event_desc = mapped_type
-            if mapped_type == "FACEOFF":
-                event_desc = "Faceoff won"
-            elif mapped_type == "GOAL":
-                event_desc = "Goal"
-            elif mapped_type == "SHOT":
-                event_desc = "Shot on goal"
-            elif mapped_type == "BLOCK":
-                event_desc = "Shot blocked"
-            elif mapped_type == "HIT":
-                event_desc = "Hit"
+            
+            if mapped_type == "GOAL":
+                # Get shot type and build descriptive goal description
+                shot_type = details.get("shotType", "").lower()
+                scoring_player_total = details.get("scoringPlayerTotal", 0)
+                
+                # Determine game situation (game-tying, go-ahead, etc.)
+                game_situation = ""
+                if home_score == away_score:
+                    game_situation = "game-tying "
+                elif (team == "HOME" and home_score > away_score) or (team == "AWAY" and away_score > home_score):
+                    game_situation = "go-ahead "
+                elif (team == "HOME" and home_score < away_score) or (team == "AWAY" and away_score < home_score):
+                    game_situation = "insurance "
+                
+                # Format shot type
+                shot_type_map = {
+                    "snap": "snap shot",
+                    "wrist": "wrist shot",
+                    "slap": "slap shot",
+                    "backhand": "backhand shot",
+                    "tip-in": "tip-in",
+                    "deflected": "deflected shot",
+                    "wrap-around": "wrap-around",
+                    "penalty-shot": "penalty shot",
+                }
+                shot_desc = shot_type_map.get(shot_type, shot_type + " shot" if shot_type else "shot")
+                
+                # Build goal description
+                event_desc = f"{scoring_player_total}' {game_situation}{shot_desc} goal"
+                
+                # Add assists if available
+                assists = []
+                if assist1_name:
+                    assists.append(assist1_name)
+                if assist2_name:
+                    assists.append(assist2_name)
+                
+                if assists:
+                    assist_text = ", ".join(assists)
+                    event_desc += f" (assists: {assist_text})"
+                    
             elif mapped_type == "PENALTY":
-                event_desc = "Penalty"
+                # Get penalty details
+                penalty_type = details.get("typeCode", "")  # MAJ or MIN
+                desc_key = details.get("descKey", "").lower()  # fighting, slashing, etc.
+                duration = details.get("duration", 0)
+                
+                # Format penalty description
+                penalty_type_map = {
+                    "fighting": "fighting",
+                    "slashing": "slashing",
+                    "tripping": "tripping",
+                    "hooking": "hooking",
+                    "holding": "holding",
+                    "interference": "interference",
+                    "roughing": "roughing",
+                    "cross-checking": "cross-checking",
+                    "boarding": "boarding",
+                    "high-sticking": "high-sticking",
+                    "unsportsmanlike": "unsportsmanlike conduct",
+                    "delay-of-game": "delay of game",
+                    "too-many-men": "too many men",
+                }
+                
+                penalty_desc = penalty_type_map.get(desc_key, desc_key.replace("-", " "))
+                
+                if duration > 0:
+                    event_desc = f"{duration} min {penalty_desc} penalty"
+                else:
+                    event_desc = f"{penalty_desc} penalty"
+                
+                # Add drawn by player if available
+                drawn_by_id = details.get("drawnByPlayerId")
+                if drawn_by_id:
+                    drawn_by_name = player_names.get(drawn_by_id)
+                    if drawn_by_name:
+                        event_desc += f" (drawn by {drawn_by_name})"
             
             # Update score for goals
             if mapped_type == "GOAL":
@@ -923,7 +996,7 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                     away_score += 1
             
             # Add event
-            events.append({
+            event_data = {
                 "id": f"{game_id}-{play.get('eventId', len(events))}",
                 "timestamp": timestamp,
                 "event_type": mapped_type,
@@ -937,7 +1010,28 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 "away_score": away_score,
                 "period": period,
                 "time_in_period": time_in_period,
-            })
+            }
+            
+            # Add assist information for goals
+            if mapped_type == "GOAL":
+                event_data["assist1"] = assist1_name
+                event_data["assist1_id"] = assist1_player_id
+                event_data["assist2"] = assist2_name
+                event_data["assist2_id"] = assist2_player_id
+                event_data["shot_type"] = details.get("shotType", "")
+                event_data["goal_number"] = details.get("scoringPlayerTotal", 0)
+            
+            # Add penalty details
+            if mapped_type == "PENALTY":
+                event_data["penalty_type"] = details.get("typeCode", "")
+                event_data["penalty_desc"] = details.get("descKey", "")
+                event_data["duration"] = details.get("duration", 0)
+                drawn_by_id = details.get("drawnByPlayerId")
+                if drawn_by_id:
+                    event_data["drawn_by"] = player_names.get(drawn_by_id)
+                    event_data["drawn_by_id"] = drawn_by_id
+            
+            events.append(event_data)
         
         # Keep chronological order (oldest first) - events are already in correct order from API
         # Reverse only for display (most recent first)
