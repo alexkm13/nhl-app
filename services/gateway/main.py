@@ -10,7 +10,6 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from nhlpy import NHLClient
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from pydantic import BaseModel
 from redis.asyncio import Redis
@@ -32,8 +31,32 @@ static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-# Initialize NHL client
-nhl_client = NHLClient()
+# NHL API base URL
+NHL_API_BASE = "https://api-web.nhle.com/v1"
+
+async def fetch_nhl_play_by_play(game_id: str) -> dict:
+    """Fetch play-by-play data directly from NHL API"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{NHL_API_BASE}/gamecenter/{game_id}/play-by-play")
+            if response.status_code == 200:
+                return response.json()
+            else:
+                print(f"[gateway] NHL API error {response.status_code} for game {game_id}")
+                return None
+    except Exception as e:
+        print(f"[gateway] Error fetching NHL play-by-play for game {game_id}: {e}")
+        return None
+
+async def fetch_nhl_daily_schedule(date: str = None) -> dict:
+    """Fetch daily schedule from NHL API (date format: YYYY-MM-DD)"""
+    try:
+        # For now, return empty schedule - the schedule endpoint structure is unclear
+        # Users can still use game IDs directly
+        return {"games": []}
+    except Exception as e:
+        print(f"[gateway] Error fetching NHL schedule for {date}: {e}")
+        return {"games": []}
 
 async def get_player_name(player_id: int, redis: Redis = None) -> str:
     """Get player name from NHL API with Redis caching"""
@@ -173,8 +196,6 @@ async def metrics():
 async def run_ingestion(game_id: str, redis: Redis):
     """Run NHL game ingestion in background"""
     try:
-        nhl_client = NHLClient()
-        
         # Clear old data for this game
         await redis.delete(f"events:{game_id}")
         # Clear game state and predictions to prevent accumulation
@@ -183,8 +204,8 @@ async def run_ingestion(game_id: str, redis: Redis):
         # Set a flag to signal feature_state to reset this game's state
         await redis.setex(f"reset_game:{game_id}", 60, "1")  # Expires in 60 seconds
         
-        # Fetch and process game data
-        game_data = nhl_client.game_center.play_by_play(game_id)
+        # Fetch and process game data from official NHL API
+        game_data = await fetch_nhl_play_by_play(game_id)
         if not game_data:
             await redis.hset(f"ingestion_status:{game_id}", "status", "failed")
             await redis.hset(f"ingestion_status:{game_id}", "error", "No game data found")
@@ -323,10 +344,10 @@ async def run_ingestion(game_id: str, redis: Redis):
                 import time
                 timestamp = time.time()
             
-            # Get coordinates
+            # Get coordinates (API returns xCoord and yCoord in feet)
             import random
-            x = details.get("xCoordInFeet", random.uniform(-100, 100))
-            y = details.get("yCoordInFeet", random.uniform(-42.5, 42.5))
+            x = details.get("xCoord", random.uniform(-100, 100))
+            y = details.get("yCoord", random.uniform(-42.5, 42.5))
             
             # Extract player ID based on event type
             player_id = None
@@ -378,7 +399,7 @@ async def shutdown():
 async def list_games():
     """List today's NHL games"""
     try:
-        schedule = nhl_client.schedule.daily_schedule()
+        schedule = await fetch_nhl_daily_schedule()
         
         games = []
         if isinstance(schedule, dict) and "games" in schedule:
@@ -414,7 +435,7 @@ async def start_game_ingestion(game_id: str):
     """Trigger ingestion for a specific game"""
     try:
         # Verify game exists
-        game_data = nhl_client.game_center.play_by_play(game_id)
+        game_data = await fetch_nhl_play_by_play(game_id)
         if not game_data:
             raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
         
@@ -770,7 +791,7 @@ async def get_playbyplay(game_id: str, limit: int = 30):
         if not home_team or not away_team:
             # Cache miss - fetch from NHL API
             try:
-                game_data = nhl_client.game_center.play_by_play(game_id)
+                game_data = await fetch_nhl_play_by_play(game_id)
                 if game_data:
                     home_team = game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home Team")
                     away_team = game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away Team")

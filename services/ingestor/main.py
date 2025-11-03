@@ -5,9 +5,26 @@ import random
 import time
 from datetime import datetime
 
+import httpx
 import psycopg
-from nhlpy import NHLClient
 from redis.asyncio import Redis
+
+# NHL API base URL
+NHL_API_BASE = "https://api-web.nhle.com/v1"
+
+async def fetch_nhl_play_by_play(game_id: str) -> dict:
+    """Fetch play-by-play data directly from NHL API"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{NHL_API_BASE}/gamecenter/{game_id}/play-by-play")
+            if response.status_code == 200:
+                return response.json()
+            else:
+                print(f"[ingestor] NHL API error {response.status_code} for game {game_id}")
+                return None
+    except Exception as e:
+        print(f"[ingestor] Error fetching NHL play-by-play for game {game_id}: {e}")
+        return None
 
 from events import GameEvent
 
@@ -82,11 +99,11 @@ async def produce_synthetic_game(r: Redis, game_id: str):
 
     print("[ingestor] game complete.")
 
-async def fetch_nhl_game_data(nhl_client: NHLClient, game_id: str):
+async def fetch_nhl_game_data(game_id: str):
     """Fetch live or completed NHL game data"""
     try:
         # Try to get play-by-play data
-        game_data = nhl_client.game_center.play_by_play(game_id)
+        game_data = await fetch_nhl_play_by_play(game_id)
         
         if not game_data or not isinstance(game_data, dict):
             return None
@@ -98,21 +115,16 @@ async def fetch_nhl_game_data(nhl_client: NHLClient, game_id: str):
             # Return full game data including team IDs
             return game_data
         
-        # Try boxscore as fallback
-        boxscore = nhl_client.game_center.boxscore(game_id)
-        if boxscore:
-            return {"status": "completed", "plays": []}
-        
         return None
     except Exception as e:
         print(f"[ingestor][nhl] Error fetching game {game_id}: {e}")
         return None
 
-async def produce_nhl_game(r: Redis, nhl_client: NHLClient, game_id: str):
+async def produce_nhl_game(r: Redis, game_id: str):
     """Produce events from real NHL game data"""
     print(f"[ingestor] Fetching NHL game data for {game_id}")
     
-    game_data = await fetch_nhl_game_data(nhl_client, game_id)
+    game_data = await fetch_nhl_game_data(game_id)
     
     if not game_data:
         print(f"[ingestor] Could not fetch NHL data for {game_id}, falling back to synthetic")
@@ -279,8 +291,8 @@ async def produce_nhl_game(r: Redis, nhl_client: NHLClient, game_id: str):
             timestamp = time.time()
         
         # Get coordinates if available
-        x = details.get("xCoordInFeet", random.uniform(-100, 100))
-        y = details.get("yCoordInFeet", random.uniform(-42.5, 42.5))
+        x = details.get("xCoord", random.uniform(-100, 100))
+        y = details.get("yCoord", random.uniform(-42.5, 42.5))
         
         # Extract player ID based on event type
         player_id = None
@@ -331,14 +343,13 @@ async def produce_nhl_game(r: Redis, nhl_client: NHLClient, game_id: str):
 
 async def main():
     r = Redis.from_url(REDIS_URL, decode_responses=True)
-    nhl_client = NHLClient()
     
     try:
         await ensure_streams(r)
         
         # Try NHL API first, fall back to synthetic
         if GAME_ID != "TEST_GAME":
-            await produce_nhl_game(r, nhl_client, GAME_ID)
+            await produce_nhl_game(r, GAME_ID)
         else:
             await produce_synthetic_game(r, GAME_ID)
     finally:
