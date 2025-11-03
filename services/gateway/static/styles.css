@@ -236,6 +236,13 @@ body {
     flex-shrink: 0;
 }
 
+.game-live-time-container .game-spread {
+    font-size: 0.8em;
+    color: #aaaaaa;
+    font-weight: 500;
+    margin-top: 2px;
+}
+
 .game-live-indicator {
     width: 8px;
     height: 8px;
@@ -636,6 +643,13 @@ button:disabled {
     align-items: center;
     gap: 8px;
     flex-shrink: 0;
+}
+
+.game-spread {
+    font-size: 0.85em;
+    color: #aaaaaa;
+    font-weight: 500;
+    margin-top: 4px;
 }
 
 .live-indicator {

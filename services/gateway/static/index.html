@@ -185,6 +185,9 @@
                                         <div class="game-live-time-container">
                                             ${isLive ? '<div class="game-live-indicator"></div>' : ''}
                                             <div class="game-live-time">${gameTimeDisplay}</div>
+                                            ${game.spread !== null && game.spread !== undefined ? 
+                                                `<div class="game-spread">${game.spread_favorite === 'home' ? game.home_team_name : game.away_team_name} ${game.spread > 0 ? '+' : ''}${game.spread}</div>` : 
+                                                '<div class="game-spread">N/A</div>'}
                                         </div>
                                         <div class="game-live-team-right">
                                             <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-live-logo" onerror="this.style.display='none'">
@@ -458,6 +461,14 @@
                 timeDisplay = `P${period}`;
             }
             
+            // Format spread
+            let spreadDisplay = 'N/A';
+            if (game.spread !== null && game.spread !== undefined) {
+                const favoriteTeam = game.spread_favorite === 'home' ? homeTeam : awayTeam;
+                const spreadSign = game.spread > 0 ? '+' : '';
+                spreadDisplay = `${favoriteTeam} ${spreadSign}${game.spread}`;
+            }
+            
             gameDetails.innerHTML = `
                 <div class="live-score-container">
                     <div class="live-team-left">
@@ -468,6 +479,7 @@
                     <div class="live-time-container">
                         ${isLive ? '<div class="live-indicator"></div>' : ''}
                         <div class="live-time">${timeDisplay}</div>
+                        <div class="game-spread">${spreadDisplay}</div>
                     </div>
                     <div class="live-team-right">
                         <img src="${homeLogo}" alt="${homeTeam}" class="live-team-logo" onerror="this.style.display='none'">

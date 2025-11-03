@@ -452,6 +452,15 @@ async def list_games(date: str = None):
                 # Get start time in UTC - let client convert to local time
                 start_time = game.get("startTimeUTC", "")
                 
+                # Get spread (mock for now - can be replaced with real betting API)
+                # Format: spread value, favorite team (home/away), over/under
+                spread_value = None
+                spread_favorite = None
+                over_under = None
+                
+                # TODO: Integrate with betting API (e.g., OddsJam, Wager API, etc.)
+                # For now, return None - will be displayed as "N/A" on frontend
+                
                 games.append({
                     "game_id": str(game.get("id", "")),
                     "away_team": away_team.get("abbrev", ""),
@@ -465,6 +474,9 @@ async def list_games(date: str = None):
                     "game_state": game.get("gameState", ""),
                     "away_score": game.get("awayScore", 0) if "awayScore" in game else away_team.get("score", 0),
                     "home_score": game.get("homeScore", 0) if "homeScore" in game else home_team.get("score", 0),
+                    "spread": spread_value,  # e.g., -1.5, +2.5
+                    "spread_favorite": spread_favorite,  # "home" or "away"
+                    "over_under": over_under,  # e.g., 6.5
                 })
         
         # Sort games by start time
@@ -737,6 +749,14 @@ async def get_winprob_friendly(game_id: str):
         else:
             favorite = "Close game"
         
+        # Get spread (mock for now - can be replaced with real betting API)
+        spread_value = None
+        spread_favorite = None
+        over_under = None
+        
+        # TODO: Integrate with betting API (e.g., OddsJam, Wager API, etc.)
+        # For now, return None - will be displayed as "N/A" on frontend
+        
         return {
             "game": {
                 "id": game_id,
@@ -745,7 +765,10 @@ async def get_winprob_friendly(game_id: str):
                 "game_state": game_state,
                 "period": period,
                 "time_in_period": time_in_period,
-                "is_live": game_state in ["LIVE", "CRIT"]
+                "is_live": game_state in ["LIVE", "CRIT"],
+                "spread": spread_value,
+                "spread_favorite": spread_favorite,
+                "over_under": over_under
             },
             "score": {
                 "home": {
