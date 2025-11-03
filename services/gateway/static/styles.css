@@ -70,7 +70,7 @@ body {
 
 .main-container {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
     gap: 30px;
     padding: 30px 40px;
     max-width: 1400px;
@@ -119,11 +119,135 @@ body {
     overflow: hidden;
     transition: all 0.2s;
     cursor: pointer;
+    padding: 20px;
 }
 
 .game-card:hover {
     border-color: #3a3a3a;
     background: #222222;
+}
+
+.game-card-header {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 20px;
+}
+
+.game-status-text {
+    color: #ffffff;
+    font-size: 0.9em;
+    font-weight: 600;
+}
+
+.game-score-teams {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.game-score-row {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.game-score-row.winner {
+    color: #ffffff;
+}
+
+.game-score-row.loser {
+    color: #666666;
+}
+
+.game-winner-indicator {
+    color: #ffffff;
+    font-size: 0.8em;
+    width: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.game-team-logo {
+    width: 50px;
+    height: 50px;
+    object-fit: contain;
+    flex-shrink: 0;
+}
+
+.game-team-name {
+    font-size: 0.95em;
+    font-weight: 500;
+    flex: 1;
+}
+
+.game-team-score {
+    font-size: 2.5em;
+    font-weight: 700;
+    text-align: right;
+}
+
+.game-live-score {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+}
+
+.game-live-team-left {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    flex: 1;
+}
+
+.game-live-team-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 10px;
+    flex: 1;
+}
+
+.game-live-logo {
+    width: 50px;
+    height: 50px;
+    object-fit: contain;
+}
+
+.game-live-score-num {
+    font-size: 2em;
+    font-weight: 700;
+    color: #ffffff;
+}
+
+.game-live-team-name {
+    font-size: 0.9em;
+    color: #ffffff;
+    font-weight: 500;
+}
+
+.game-live-time-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.game-live-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ff4d6d;
+    animation: pulse 2s infinite;
+}
+
+.game-live-time {
+    font-size: 1.2em;
+    font-weight: 600;
+    color: #ffffff;
 }
 
 .game-row {
@@ -226,12 +350,15 @@ body {
 }
 
 .game-details {
-    margin-top: 30px;
-    padding: 30px;
+    margin-top: 0;
+    padding: 30px 40px;
     background: #1a1a1a;
-    border: 1px solid #2a2a2a;
-    border-radius: 12px;
+    border-top: 1px solid #2a2a2a;
     display: none;
+    width: 100%;
+    max-width: 1400px;
+    margin-left: auto;
+    margin-right: auto;
 }
 
 .game-details.show {

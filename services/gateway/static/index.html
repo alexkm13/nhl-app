@@ -114,33 +114,78 @@
                 const data = await response.json();
 
                 if (response.ok && data.games && data.games.length > 0) {
-                    gamesList.innerHTML = data.games.map(game => `
-                        <div class="game-card" onclick="selectGame('${game.game_id}')">
-                            <div class="game-row">
-                                <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="team-logo" onerror="this.style.display='none'">
-                                <div class="team-info">
-                                    <div class="team-record">${game.away_score || '0'}-${game.home_score || '0'}</div>
-                                    <div class="team-name away">${game.away_team_name || game.away_team}</div>
+                    gamesList.innerHTML = data.games.map(game => {
+                        const isFinal = game.game_state === 'OFF' || game.game_state === 'FINAL';
+                        const homeScore = game.home_score || 0;
+                        const awayScore = game.away_score || 0;
+                        const homeIsWinner = homeScore > awayScore;
+                        const awayIsWinner = awayScore > homeScore;
+                        const isTie = homeScore === awayScore;
+                        
+                        // Determine winner/loser for final games
+                        if (isFinal && !isTie) {
+                            const winnerRow = homeIsWinner ?
+                                `<div class="game-score-row winner">
+                                    <div class="game-winner-indicator">▶</div>
+                                    <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-team-logo" onerror="this.style.display='none'">
+                                    <div class="game-team-name">${game.home_team_name || game.home_team}</div>
+                                    <div class="game-team-score">${homeScore}</div>
+                                </div>` :
+                                `<div class="game-score-row winner">
+                                    <div class="game-winner-indicator">▶</div>
+                                    <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="game-team-logo" onerror="this.style.display='none'">
+                                    <div class="game-team-name">${game.away_team_name || game.away_team}</div>
+                                    <div class="game-team-score">${awayScore}</div>
+                                </div>`;
+                            
+                            const loserRow = homeIsWinner ?
+                                `<div class="game-score-row loser">
+                                    <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="game-team-logo" onerror="this.style.display='none'">
+                                    <div class="game-team-name">${game.away_team_name || game.away_team}</div>
+                                    <div class="game-team-score">${awayScore}</div>
+                                </div>` :
+                                `<div class="game-score-row loser">
+                                    <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-team-logo" onerror="this.style.display='none'">
+                                    <div class="game-team-name">${game.home_team_name || game.home_team}</div>
+                                    <div class="game-team-score">${homeScore}</div>
+                                </div>`;
+                            
+                            return `
+                                <div class="game-card" onclick="selectGame('${game.game_id}')">
+                                    <div class="game-card-header">
+                                        <span class="game-status-text">▼ Final</span>
+                                    </div>
+                                    <div class="game-score-teams">
+                                        ${loserRow}
+                                        ${winnerRow}
+                                    </div>
                                 </div>
-                                <div class="game-time-info">
-                                    <div class="game-time">${game.game_time || 'TBD'}</div>
-                                    <div class="game-channel">${game.venue || ''}</div>
-                                    <div class="game-status">${game.game_state || 'FUT'}</div>
+                            `;
+                        } else {
+                            // Live or future game - show live format
+                            const isLive = game.game_state === 'LIVE' || game.game_state === 'CRIT';
+                            return `
+                                <div class="game-card" onclick="selectGame('${game.game_id}')">
+                                    <div class="game-live-score">
+                                        <div class="game-live-team-left">
+                                            <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="game-live-logo" onerror="this.style.display='none'">
+                                            <div class="game-live-score-num">${awayScore}</div>
+                                            <div class="game-live-team-name">${game.away_team_name || game.away_team}</div>
+                                        </div>
+                                        <div class="game-live-time-container">
+                                            ${isLive ? '<div class="game-live-indicator"></div>' : ''}
+                                            <div class="game-live-time">${game.game_time || 'TBD'}</div>
+                                        </div>
+                                        <div class="game-live-team-right">
+                                            <div class="game-live-score-num">${homeScore}</div>
+                                            <div class="game-live-team-name">${game.home_team_name || game.home_team}</div>
+                                            <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-live-logo" onerror="this.style.display='none'">
+                                        </div>
+                                    </div>
                                 </div>
-                            </div>
-                            <div class="game-row">
-                                <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="team-logo" onerror="this.style.display='none'">
-                                <div class="team-info">
-                                    <div class="team-record">${game.home_score || '0'}-${game.away_score || '0'}</div>
-                                    <div class="team-name">${game.home_team_name || game.home_team}</div>
-                                </div>
-                                <div class="game-time-info">
-                                    <div class="game-time"></div>
-                                    <div class="game-channel"></div>
-                                </div>
-                            </div>
-                        </div>
-                    `).join('');
+                            `;
+                        }
+                    }).join('');
                 } else {
                     gamesList.innerHTML = '<div style="color: #aaaaaa; padding: 20px; text-align: center;">No games scheduled for this date</div>';
                 }
@@ -353,7 +398,35 @@
                             ${winnerRow}
                         </div>
                     </div>
+
+                    <div class="win-prob">
+                        <div class="win-prob-title">Win Probability</div>
+                        <div class="win-prob-bar">
+                            <div class="win-prob-bar-label">
+                                <span>${homeTeam}</span>
+                                <span>${homeProb}%</span>
+                            </div>
+                            <div class="win-prob-bar-fill">
+                                <div class="win-prob-bar-progress" style="width: ${homeProb}%">${homeProb}%</div>
+                            </div>
+                        </div>
+                        <div class="win-prob-bar">
+                            <div class="win-prob-bar-label">
+                                <span>${awayTeam}</span>
+                                <span>${awayProb}%</span>
+                            </div>
+                            <div class="win-prob-bar-fill">
+                                <div class="win-prob-bar-progress" style="width: ${awayProb}%">${awayProb}%</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="playbyplay-feed" class="playbyplay-feed">
+                        <div class="spinner"></div>
+                    </div>
                 `;
+                
+                loadPlayByPlay(gameId, homeTeam, awayTeam);
                 gameDetails.style.display = 'block';
                 gameDetails.classList.add('show');
                 gameDetails.scrollIntoView({ behavior: 'smooth' });
@@ -393,51 +466,30 @@
                     </div>
                 </div>
 
-                <div class="tabs">
-                    <button class="tab active" onclick="switchTab('overview', '${gameId}')">Overview</button>
-                    <button class="tab" onclick="switchTab('playbyplay', '${gameId}')">Play-by-Play</button>
-                </div>
-
-                <div id="overview-tab" class="tab-content active">
-                    <div style="padding: 20px; background: #222222; border-radius: 8px; margin-bottom: 20px;">
-                        <div style="font-size: 0.9em; color: #aaaaaa; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Current Situation</div>
-                        <div style="font-size: 1.1em; font-weight: 600; margin-bottom: 8px;">${situation.strength}${situation.empty_net && !situation.strength.toLowerCase().includes('empty net') ? ' Empty Net' : ''}</div>
-                        <div style="font-size: 0.9em; color: #aaaaaa; margin-top: 8px;">
-                            Last Event: ${situation.last_event}${situation.last_player ? ` by ${situation.last_player}` : ''}
+                <div class="win-prob">
+                    <div class="win-prob-title">Win Probability</div>
+                    <div class="win-prob-bar">
+                        <div class="win-prob-bar-label">
+                            <span>${homeTeam}</span>
+                            <span>${homeProb}%</span>
+                        </div>
+                        <div class="win-prob-bar-fill">
+                            <div class="win-prob-bar-progress" style="width: ${homeProb}%">${homeProb}%</div>
                         </div>
                     </div>
-
-                    <div class="win-prob">
-                        <div class="win-prob-title">Win Probability</div>
-                        <div class="win-prob-bar">
-                            <div class="win-prob-bar-label">
-                                <span>${homeTeam}</span>
-                                <span>${homeProb}%</span>
-                            </div>
-                            <div class="win-prob-bar-fill">
-                                <div class="win-prob-bar-progress" style="width: ${homeProb}%">${homeProb}%</div>
-                            </div>
+                    <div class="win-prob-bar">
+                        <div class="win-prob-bar-label">
+                            <span>${awayTeam}</span>
+                            <span>${awayProb}%</span>
                         </div>
-                        <div class="win-prob-bar">
-                            <div class="win-prob-bar-label">
-                                <span>${awayTeam}</span>
-                                <span>${awayProb}%</span>
-                            </div>
-                            <div class="win-prob-bar-fill">
-                                <div class="win-prob-bar-progress" style="width: ${awayProb}%">${awayProb}%</div>
-                            </div>
-                        </div>
-                        <div style="text-align: center; margin-top: 15px; padding-top: 15px; border-top: 1px solid #2a2a2a;">
-                            <div style="font-size: 0.9em; color: #aaaaaa; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px;">Confidence</div>
-                            <div style="font-size: 1.2em; font-weight: 600;">${data.confidence}</div>
+                        <div class="win-prob-bar-fill">
+                            <div class="win-prob-bar-progress" style="width: ${awayProb}%">${awayProb}%</div>
                         </div>
                     </div>
                 </div>
 
-                <div id="playbyplay-tab" class="tab-content">
-                    <div id="playbyplay-feed" class="playbyplay-feed">
-                        <div class="spinner"></div>
-                    </div>
+                <div id="playbyplay-feed" class="playbyplay-feed">
+                    <div class="spinner"></div>
                 </div>
             `;
             
