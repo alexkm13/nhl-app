@@ -140,7 +140,7 @@ async def run_ingestion(game_id: str, redis: Redis):
         for play in plays:
             # Skip non-relevant events
             type_code = str(play.get("typeCode", ""))
-            if type_code in ["520", "516", "517"]:  # period-start, stoppage, period-end
+            if type_code in ["520", "516", "517", "524"]:  # period-start, stoppage, period-end, game-end
                 continue
             
             # Map event types

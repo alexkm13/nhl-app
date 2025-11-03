@@ -68,8 +68,11 @@ async def process_events():
                     state.ts = ts - game_starts[game_id]  # Convert to relative time
                     state.strength = strength
                     state.empty_net = empty_net
-                    state.last_event = ev
-                    state.last_player_id = player_id
+                    # Only update last_event and last_player_id if this event has a player
+                    # This prevents showing "None" for events like stoppages or game-end
+                    if player_id is not None:
+                        state.last_event = ev
+                        state.last_player_id = player_id
                     if ev == "GOAL":
                         state.goal(team)
 

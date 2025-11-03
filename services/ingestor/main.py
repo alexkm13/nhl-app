@@ -151,7 +151,7 @@ async def produce_nhl_game(r: Redis, nhl_client: NHLClient, game_id: str):
         }
         
         # Skip non-relevant events
-        if type_code in ["520", "516", "517"]:  # period-start, stoppage, period-end
+        if type_code in ["520", "516", "517", "524"]:  # period-start, stoppage, period-end, game-end
             continue
         
         mapped_type = type_mapping.get(type_code, "SHOT")
