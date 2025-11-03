@@ -548,16 +548,29 @@
                     { x: x2, y: y }
                 ];
                 minTime = 0;
-                maxTime = 3600; // Assume 60 minutes for a full game
+                maxTime = 3600; // Assume 60 minutes (3 periods * 20 minutes) for a full game
                 timeRange = maxTime - minTime;
             } else {
-                // Calculate time range from historical data
+                // Use relative game time (seconds elapsed from game start)
+                // The data should already be in relative time from the backend
                 const times = historyData.map(d => d.ts);
                 minTime = Math.min(...times);
                 maxTime = Math.max(...times);
-                timeRange = maxTime - minTime || 1;
+                
+                // Ensure we start from 0 (game start)
+                minTime = Math.min(0, minTime);
+                
+                // For a typical NHL game: 3 periods * 20 minutes = 3600 seconds
+                // If maxTime is significantly less, it might be a game in progress
+                // If maxTime is greater, it might include overtime
+                // Set a reasonable max for display (e.g., up to 3900 seconds for OT games)
+                const typicalGameTime = 3600; // 3 periods * 20 minutes
+                const maxDisplayTime = Math.max(typicalGameTime, maxTime + 300); // Add buffer
+                
+                timeRange = maxDisplayTime - minTime || 1;
                 
                 // Map data points to SVG coordinates
+                // X-axis: 0 seconds (game start) = left, maxTime = right
                 points = historyData.map((d, i) => {
                     const x = padding.left + (d.ts - minTime) / timeRange * chartWidth;
                     const y = padding.top + chartHeight - (d.p_home_win * chartHeight);
@@ -568,7 +581,8 @@
                 const lastPoint = points[points.length - 1];
                 if (!lastPoint || Math.abs(lastPoint.x - (width - padding.right)) > 10) {
                     const currentProb = homeProb / 100;
-                    const currentX = width - padding.right;
+                    // Use maxTime for current point if available, otherwise use the calculated max
+                    const currentX = padding.left + (maxTime - minTime) / timeRange * chartWidth;
                     const currentY = padding.top + chartHeight - (currentProb * chartHeight);
                     points.push({ x: currentX, y: currentY });
                 }
@@ -594,15 +608,29 @@
                 areaPath += ` L ${points[points.length - 1].x} ${padding.top} Z`;
             }
             
-            // Determine period markers
+            // Determine period markers based on relative game time
+            // NHL: 20 minutes (1200 seconds) per period
             const periods = [];
-            if (timeRange > 0 && timeRange < 4000) {  // Typical NHL game is ~3600 seconds
-                // Mark periods at 1/3, 2/3, and end (roughly)
-                periods.push({ x: padding.left + chartWidth / 3, label: '1st' });
-                periods.push({ x: padding.left + chartWidth * 2 / 3, label: '2nd' });
-                periods.push({ x: padding.left + chartWidth, label: '3rd' });
-            } else if (timeRange === 0 || !historyData || historyData.length === 0) {
-                // For games without history, show period markers at even intervals
+            const periodLength = 1200; // 20 minutes in seconds
+            const periodsInGame = Math.ceil(timeRange / periodLength);
+            
+            for (let i = 1; i <= periodsInGame && i <= 5; i++) {
+                const periodTime = i * periodLength;
+                // Only show markers if they're within the displayed time range
+                if (periodTime <= timeRange) {
+                    const x = padding.left + (periodTime - minTime) / timeRange * chartWidth;
+                    let label = '';
+                    if (i === 1) label = '1st';
+                    else if (i === 2) label = '2nd';
+                    else if (i === 3) label = '3rd';
+                    else if (i === 4) label = 'OT';
+                    else if (i === 5) label = 'SO';
+                    periods.push({ x, label });
+                }
+            }
+            
+            // If no periods calculated, use default markers
+            if (periods.length === 0 && timeRange > 0) {
                 periods.push({ x: padding.left + chartWidth / 3, label: '1st' });
                 periods.push({ x: padding.left + chartWidth * 2 / 3, label: '2nd' });
                 periods.push({ x: padding.left + chartWidth, label: '3rd' });

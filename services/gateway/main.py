@@ -763,6 +763,19 @@ async def get_winprob_history(game_id: str):
         if not DATABASE_URL:
             return {"game_id": game_id, "data": []}
         
+        # Get game start time from NHL API to calculate relative time
+        game_data = await fetch_nhl_play_by_play(game_id)
+        game_start_ts = None
+        if game_data:
+            game_start_str = game_data.get("startTimeUTC", "")
+            if game_start_str:
+                try:
+                    # Parse game start time (format: "YYYY-MM-DDTHH:MM:SSZ")
+                    game_start = datetime.fromisoformat(game_start_str.replace('Z', '+00:00'))
+                    game_start_ts = game_start.timestamp()
+                except Exception:
+                    pass
+        
         async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -776,10 +789,31 @@ async def get_winprob_history(game_id: str):
                 )
                 rows = await cur.fetchall()
                 
-                data = [{"ts": float(ts.timestamp()), "p_home_win": float(p_home_win)} for ts, p_home_win in rows]
+                # Calculate relative time (seconds elapsed from game start)
+                data = []
+                for ts, p_home_win in rows:
+                    # If we have game start time, calculate relative time
+                    if game_start_ts:
+                        relative_time = float(ts.timestamp()) - game_start_ts
+                        # Only include positive relative times (after game start)
+                        if relative_time >= 0:
+                            data.append({"ts": relative_time, "p_home_win": float(p_home_win)})
+                    else:
+                        # Fallback: assume ts is already relative time (for backwards compatibility)
+                        # If ts is a timestamp that looks like it's from 1970, it's probably relative time
+                        ts_float = float(ts.timestamp())
+                        if ts_float < 1000000:  # Less than ~11 days after epoch, probably relative time
+                            data.append({"ts": ts_float, "p_home_win": float(p_home_win)})
+                        else:
+                            # It's an absolute timestamp but we don't have game start - skip or use as-is
+                            # For now, we'll use it but the graph won't be accurate
+                            data.append({"ts": ts_float, "p_home_win": float(p_home_win)})
+                
                 return {"game_id": game_id, "data": data}
     except Exception as e:
         print(f"[gateway] Error fetching win probability history: {e}")
+        import traceback
+        traceback.print_exc()
         return {"game_id": game_id, "data": []}
 
 @app.get("/v1/games/{game_id}/winprob/friendly")
