@@ -52,12 +52,26 @@ async def fetch_nhl_play_by_play(game_id: str) -> dict:
 async def fetch_nhl_daily_schedule(date: str = None) -> dict:
     """Fetch daily schedule from NHL API (date format: YYYY-MM-DD)"""
     try:
-        # For now, return empty schedule - the schedule endpoint structure is unclear
-        # Users can still use game IDs directly
-        return {"games": []}
+        if date is None:
+            # Get today's date
+            from datetime import date as dt_date
+            date = dt_date.today().strftime("%Y-%m-%d")
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Try the schedule endpoint with date
+            response = await client.get(f"{NHL_API_BASE}/schedule/{date}")
+            if response.status_code == 200:
+                data = response.json()
+                # The API returns gameWeek array with dates
+                if isinstance(data, dict) and "gameWeek" in data:
+                    for week in data.get("gameWeek", []):
+                        if week.get("date") == date:
+                            return week
+                return data
+            return {"games": [], "date": date}
     except Exception as e:
         print(f"[gateway] Error fetching NHL schedule for {date}: {e}")
-        return {"games": []}
+        return {"games": [], "date": date}
 
 async def get_player_name(player_id: int, redis: Redis = None) -> str:
     """Get player name from NHL API with Redis caching"""
@@ -897,8 +911,9 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 "time_in_period": time_in_period,
             })
         
-        # Sort by timestamp (most recent first) for display
-        events.sort(key=lambda x: x["timestamp"], reverse=True)
+        # Keep chronological order (oldest first) - events are already in correct order from API
+        # Reverse only for display (most recent first)
+        events.reverse()
         
         return {
             "game_id": game_id,
