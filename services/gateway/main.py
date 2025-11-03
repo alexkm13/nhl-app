@@ -942,7 +942,34 @@ async def get_playbyplay(game_id: str, limit: int = 30):
             if mapped_type == "GOAL":
                 # Get shot type and build descriptive goal description
                 shot_type = details.get("shotType", "").lower()
-                scoring_player_total = details.get("scoringPlayerTotal", 0)
+                zone_code = details.get("zoneCode", "")
+                
+                # Calculate distance from goal
+                # NHL rink coordinates: center ice is x=0, goals are at x=89 and x=-89, y=0
+                # x-coordinate: positive = attacking end (x=89 goal), negative = defending end (x=-89 goal)
+                x_coord = details.get("xCoord")
+                y_coord = details.get("yCoord")
+                distance = None
+                
+                if x_coord is not None and y_coord is not None:
+                    # Determine which goal was scored on based on x-coordinate
+                    # NHL rink: goals are at x=89 (positive end) and x=-89 (negative end)
+                    # If shooting from positive x, goal is at x=89
+                    # If shooting from negative x, goal is at x=-89
+                    # The x-coordinate tells us which half of the rink the shot was from
+                    if x_coord > 0:
+                        # Shot from positive x half - goal is at x=89
+                        goal_x = 89
+                    else:
+                        # Shot from negative x half - goal is at x=-89
+                        goal_x = -89
+                    goal_y = 0
+                    
+                    # Calculate distance in feet
+                    import math
+                    distance = math.sqrt((x_coord - goal_x)**2 + (y_coord - goal_y)**2)
+                    # Round to nearest foot
+                    distance = int(round(distance))
                 
                 # Determine game situation (game-tying, go-ahead, etc.)
                 # Check what the score will be AFTER this goal
@@ -974,10 +1001,10 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 }
                 shot_desc = shot_type_map.get(shot_type, shot_type + " shot" if shot_type else "shot")
                 
-                # Build goal description
-                # Format: "10' game-tying tip-in goal" or "2nd goal snap shot goal"
-                if scoring_player_total > 0:
-                    event_desc = f"{scoring_player_total}' {game_situation}{shot_desc} goal"
+                # Build goal description with distance
+                # Format: "7' go-ahead slap shot goal"
+                if distance is not None:
+                    event_desc = f"{distance}' {game_situation}{shot_desc} goal"
                 else:
                     event_desc = f"{game_situation}{shot_desc} goal"
                 
