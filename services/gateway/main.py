@@ -449,16 +449,8 @@ async def list_games(date: str = None):
                 away_team = game.get("awayTeam", {})
                 home_team = game.get("homeTeam", {})
                 
-                # Format game time
+                # Get start time in UTC - let client convert to local time
                 start_time = game.get("startTimeUTC", "")
-                game_time = ""
-                if start_time:
-                    try:
-                        dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-                        # Convert to local time and format
-                        game_time = dt.strftime("%I:%M %p")
-                    except:
-                        game_time = start_time
                 
                 games.append({
                     "game_id": str(game.get("id", "")),
@@ -469,8 +461,7 @@ async def list_games(date: str = None):
                     "home_team_name": home_team.get("commonName", {}).get("default", ""),
                     "home_team_logo": home_team.get("logo", ""),
                     "venue": game.get("venue", {}).get("default", ""),
-                    "game_time": game_time,
-                    "start_time_utc": start_time,
+                    "start_time_utc": start_time,  # UTC timestamp for client-side conversion
                     "game_state": game.get("gameState", ""),
                     "away_score": game.get("awayScore", 0) if "awayScore" in game else away_team.get("score", 0),
                     "home_score": game.get("homeScore", 0) if "homeScore" in game else home_team.get("score", 0),

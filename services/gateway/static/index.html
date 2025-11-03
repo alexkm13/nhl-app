@@ -157,6 +157,23 @@
                         } else {
                             // Live or future game - show live format
                             const isLive = game.game_state === 'LIVE' || game.game_state === 'CRIT';
+                            
+                            // Convert UTC time to local time
+                            let gameTimeDisplay = 'TBD';
+                            if (game.start_time_utc) {
+                                try {
+                                    const utcDate = new Date(game.start_time_utc);
+                                    const localTime = utcDate.toLocaleTimeString('en-US', {
+                                        hour: 'numeric',
+                                        minute: '2-digit',
+                                        hour12: true
+                                    });
+                                    gameTimeDisplay = localTime;
+                                } catch (e) {
+                                    gameTimeDisplay = 'TBD';
+                                }
+                            }
+                            
                             return `
                                 <div class="game-card" onclick="selectGame('${game.game_id}')">
                                     <div class="game-live-score">
@@ -167,7 +184,7 @@
                                         </div>
                                         <div class="game-live-time-container">
                                             ${isLive ? '<div class="game-live-indicator"></div>' : ''}
-                                            <div class="game-live-time">${game.game_time || 'TBD'}</div>
+                                            <div class="game-live-time">${gameTimeDisplay}</div>
                                         </div>
                                         <div class="game-live-team-right">
                                             <div class="game-live-score-num">${homeScore}</div>
