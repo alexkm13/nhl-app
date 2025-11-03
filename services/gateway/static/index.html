@@ -34,13 +34,6 @@
                 <div class="spinner"></div>
             </div>
         </div>
-
-        <div class="section">
-            <div class="section-header standings">Standings</div>
-            <div class="standings-list" id="standingsList">
-                <div style="color: #aaaaaa; padding: 20px; text-align: center;">Standings coming soon</div>
-            </div>
-        </div>
     </div>
 
     <div class="game-details" id="gameDetails"></div>
@@ -532,7 +525,7 @@
             feed.innerHTML = '<div class="spinner"></div>';
 
             try {
-                const response = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=30`);
+                const response = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=50`);
                 const data = await response.json();
 
                 if (response.ok && data.events) {
