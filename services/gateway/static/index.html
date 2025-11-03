@@ -313,21 +313,37 @@
                 const awayIsWinner = winner === "AWAY";
                 const isTie = winner === "TIE";
                 
+                // Order: loser first (top), winner second (bottom) with triangle
+                const winnerRow = homeIsWinner ? 
+                    `<div class="final-team-row winner">
+                        <div class="final-winner-indicator">▶</div>
+                        <div class="final-team-name">${finalHomeTeam}</div>
+                        <div class="final-team-score">${finalHomeScore}</div>
+                    </div>` :
+                    `<div class="final-team-row winner">
+                        <div class="final-winner-indicator">▶</div>
+                        <div class="final-team-name">${finalAwayTeam}</div>
+                        <div class="final-team-score">${finalAwayScore}</div>
+                    </div>`;
+                
+                const loserRow = homeIsWinner ?
+                    `<div class="final-team-row loser">
+                        <div class="final-team-name">${finalAwayTeam}</div>
+                        <div class="final-team-score">${finalAwayScore}</div>
+                    </div>` :
+                    `<div class="final-team-row loser">
+                        <div class="final-team-name">${finalHomeTeam}</div>
+                        <div class="final-team-score">${finalHomeScore}</div>
+                    </div>`;
+                
                 gameDetails.innerHTML = `
                     <div class="final-score-container">
                         <div class="final-score-header">
                             <span class="final-status">▼ Final</span>
                         </div>
                         <div class="final-score-teams">
-                            <div class="final-team-row ${awayIsWinner ? 'winner' : 'loser'}">
-                                <div class="final-team-name">${finalAwayTeam}</div>
-                                <div class="final-team-score">${finalAwayScore}</div>
-                            </div>
-                            <div class="final-team-row ${homeIsWinner ? 'winner' : 'loser'}">
-                                ${homeIsWinner ? '<div class="final-winner-indicator">▶</div>' : ''}
-                                <div class="final-team-name">${finalHomeTeam}</div>
-                                <div class="final-team-score">${finalHomeScore}</div>
-                            </div>
+                            ${loserRow}
+                            ${winnerRow}
                         </div>
                     </div>
                 `;
