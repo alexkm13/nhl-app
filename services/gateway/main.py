@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import os
 import random
 import subprocess
@@ -952,21 +953,36 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 distance = None
                 
                 if x_coord is not None and y_coord is not None:
-                    # Determine which goal was scored on based on x-coordinate
+                    # Determine which goal was scored on
                     # NHL rink: goals are at x=89 (positive end) and x=-89 (negative end)
-                    # If shooting from positive x, goal is at x=89
-                    # If shooting from negative x, goal is at x=-89
-                    # The x-coordinate tells us which half of the rink the shot was from
-                    if x_coord > 0:
-                        # Shot from positive x half - goal is at x=89
-                        goal_x = 89
+                    # In offensive zone (O), team is attacking:
+                    #   HOME team attacks +x end (x=89)
+                    #   AWAY team attacks -x end (x=-89)
+                    # Use zone code to determine which goal, not just x-coordinate
+                    if zone_code == "O":
+                        # Offensive zone - determine goal based on team
+                        if team == "HOME":
+                            goal_x = 89  # HOME attacks +x end
+                        else:  # AWAY
+                            goal_x = -89  # AWAY attacks -x end
+                    elif zone_code == "D":
+                        # Defensive zone - opposite goal
+                        if team == "HOME":
+                            goal_x = -89  # Their own goal
+                        else:  # AWAY
+                            goal_x = 89  # Their own goal
                     else:
-                        # Shot from negative x half - goal is at x=-89
-                        goal_x = -89
+                        # Neutral zone or unknown - use closest goal based on x-coordinate
+                        dist_to_89 = math.sqrt((x_coord - 89)**2 + (y_coord - 0)**2)
+                        dist_to_neg89 = math.sqrt((x_coord - (-89))**2 + (y_coord - 0)**2)
+                        if dist_to_89 < dist_to_neg89:
+                            goal_x = 89
+                        else:
+                            goal_x = -89
+                    
                     goal_y = 0
                     
                     # Calculate distance in feet
-                    import math
                     distance = math.sqrt((x_coord - goal_x)**2 + (y_coord - goal_y)**2)
                     # Round to nearest foot
                     distance = int(round(distance))
