@@ -590,10 +590,9 @@
                 dates.push(date);
             }
 
-            dates.forEach(date => {
+            dates.forEach((date, index) => {
                 const dateItem = document.createElement('div');
                 dateItem.className = 'date-item';
-                if (i === 0) dateItem.classList.add('active');
                 
                 const month = date.toLocaleDateString('en-US', { month: 'short' });
                 const day = date.getDate();
@@ -606,7 +605,7 @@
                     loadGamesList(date);
                 };
                 
-                if (i === 0) {
+                if (index === 2) {
                     dateItem.classList.add('active');
                 }
                 
