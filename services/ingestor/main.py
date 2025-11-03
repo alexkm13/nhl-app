@@ -190,16 +190,16 @@ async def produce_nhl_game(r: Redis, nhl_client: NHLClient, game_id: str):
                 # Empty net situations
                 if home_skaters == 6:
                     # Home has empty net (6 skaters)
-                    if away_skaters < 5:
-                        strength = "ENPP"  # Empty net + power play
+                    if away_skaters <= 3:
+                        strength = "ENPP"  # Empty net + power play (definite penalty situation)
                     else:
-                        strength = "EN"  # Empty net even strength
+                        strength = "EN"  # Empty net even strength (6v5 or 6v4)
                 elif away_skaters == 6:
-                    # Away has empty net (6 skaters)
+                    # Away has empty net (6 skaters) - HOME is defending against empty net
                     if home_skaters < 5:
-                        strength = "ENPK"  # Empty net + penalty kill
+                        strength = "PK"  # HOME is shorthanded (penalty kill situation)
                     else:
-                        strength = "PK"  # Penalty kill (away has empty net)
+                        strength = "PK"  # HOME defending against empty net (disadvantage)
                 elif home_skaters == 0:
                     # Home goalie pulled (0 skaters = empty net)
                     strength = "PK"  # Home is shorthanded
@@ -223,16 +223,16 @@ async def produce_nhl_game(r: Redis, nhl_client: NHLClient, game_id: str):
                 # Empty net situations
                 if away_skaters == 6:
                     # Away has empty net (6 skaters)
-                    if home_skaters < 5:
-                        strength = "ENPP"  # Empty net + power play
+                    if home_skaters <= 3:
+                        strength = "ENPP"  # Empty net + power play (definite penalty situation)
                     else:
-                        strength = "EN"  # Empty net even strength
+                        strength = "EN"  # Empty net even strength (6v5 or 6v4)
                 elif home_skaters == 6:
-                    # Home has empty net (6 skaters)
+                    # Home has empty net (6 skaters) - AWAY is defending against empty net
                     if away_skaters < 5:
-                        strength = "ENPK"  # Empty net + penalty kill
+                        strength = "PK"  # AWAY is shorthanded (penalty kill situation)
                     else:
-                        strength = "PK"  # Penalty kill (home has empty net)
+                        strength = "PK"  # AWAY defending against empty net (disadvantage)
                 elif away_skaters == 0:
                     # Away goalie pulled (0 skaters = empty net)
                     strength = "PK"  # Away is shorthanded
