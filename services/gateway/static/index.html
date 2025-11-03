@@ -34,31 +34,45 @@
 
         .date-selector {
             display: flex;
-            gap: 20px;
-            padding: 15px 40px;
+            gap: 30px;
+            padding: 20px 40px;
             background: #1a1a1a;
             border-bottom: 1px solid #2a2a2a;
             overflow-x: auto;
         }
 
         .date-item {
-            padding: 8px 16px;
+            display: flex;
+            flex-direction: column;
             cursor: pointer;
-            border-radius: 6px;
-            font-size: 0.9em;
-            font-weight: 600;
-            white-space: nowrap;
             transition: all 0.2s;
-            color: #ffffff;
+            white-space: nowrap;
         }
 
         .date-item:hover {
-            background: #2a2a2a;
+            opacity: 0.8;
         }
 
-        .date-item.active {
-            background: #ff4d6d;
-            color: #ffffff;
+        .date-item .date-top {
+            font-size: 0.85em;
+            font-weight: 500;
+            color: #aaaaaa;
+            margin-bottom: 4px;
+        }
+
+        .date-item .date-bottom {
+            font-size: 1.2em;
+            font-weight: 700;
+            color: #aaaaaa;
+        }
+
+        .date-item.active .date-top {
+            color: #ff4d6d;
+        }
+
+        .date-item.active .date-bottom {
+            color: #ff4d6d;
+            font-size: 1.3em;
         }
 
         .main-container {
@@ -598,7 +612,17 @@
                 const day = date.getDate();
                 const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
                 
-                dateItem.textContent = `${month} ${day} ${dayName}`;
+                const dateTop = document.createElement('div');
+                dateTop.className = 'date-top';
+                dateTop.textContent = `${month} ${day}`;
+                
+                const dateBottom = document.createElement('div');
+                dateBottom.className = 'date-bottom';
+                dateBottom.textContent = dayName;
+                
+                dateItem.appendChild(dateTop);
+                dateItem.appendChild(dateBottom);
+                
                 dateItem.onclick = () => {
                     document.querySelectorAll('.date-item').forEach(item => item.classList.remove('active'));
                     dateItem.classList.add('active');
