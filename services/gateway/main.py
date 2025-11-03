@@ -263,13 +263,64 @@ async def start_game_ingestion(game_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
+@app.get("/v1/games/{game_id}/status")
+async def get_game_status(game_id: str):
+    """Check ingestion and prediction status for a game"""
+    r = app.state.redis
+    
+    # Check ingestion status
+    ingestion_status = await r.hgetall(f"ingestion_status:{game_id}")
+    
+    # Check if prediction exists
+    prediction = await r.hgetall(f"pred:{game_id}")
+    
+    # Check if state exists
+    state = await r.hgetall(f"state:{game_id}")
+    
+    status = ingestion_status.get("status", "not_started")
+    has_prediction = bool(prediction)
+    has_state = bool(state)
+    
+    return {
+        "game_id": game_id,
+        "matchup": ingestion_status.get("matchup", "Unknown"),
+        "ingestion_status": status,
+        "has_prediction": has_prediction,
+        "has_state": has_state,
+        "error": ingestion_status.get("error"),
+        "message": (
+            "Prediction available" if has_prediction
+            else "Ingestion in progress, please wait..." if status == "in_progress"
+            else "Ingestion completed, waiting for prediction..." if status == "completed"
+            else "Ingestion failed" if status == "failed"
+            else "No ingestion started yet. Call POST /v1/games/{game_id}/start to begin."
+        )
+    }
+
 @app.get("/v1/games/{game_id}/winprob", response_model=WinProb)
 async def get_winprob(game_id: str):
     r = app.state.redis
     key = f"pred:{game_id}"
     data = await r.hgetall(key)
     if not data:
-        raise HTTPException(status_code=404, detail="No prediction yet for this game")
+        # Check if ingestion is in progress
+        ingestion_status = await r.hget(f"ingestion_status:{game_id}", "status")
+        if ingestion_status == "in_progress":
+            raise HTTPException(
+                status_code=202,
+                detail="Ingestion in progress. Please wait 60-90 seconds and try again. Check status at GET /v1/games/{game_id}/status"
+            )
+        elif ingestion_status == "failed":
+            error = await r.hget(f"ingestion_status:{game_id}", "error")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Ingestion failed: {error}. Check status at GET /v1/games/{game_id}/status"
+            )
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No prediction yet for game {game_id}. Start ingestion with POST /v1/games/{game_id}/start"
+            )
     try:
         return WinProb(
             game_id=data["game_id"],
@@ -287,7 +338,24 @@ async def get_winprob_friendly(game_id: str):
     key = f"pred:{game_id}"
     data = await r.hgetall(key)
     if not data:
-        raise HTTPException(status_code=404, detail="No prediction yet for this game")
+        # Check if ingestion is in progress
+        ingestion_status = await r.hget(f"ingestion_status:{game_id}", "status")
+        if ingestion_status == "in_progress":
+            raise HTTPException(
+                status_code=202,
+                detail="Ingestion in progress. Please wait 60-90 seconds and try again. Check status at GET /v1/games/{game_id}/status"
+            )
+        elif ingestion_status == "failed":
+            error = await r.hget(f"ingestion_status:{game_id}", "error")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Ingestion failed: {error}. Check status at GET /v1/games/{game_id}/status"
+            )
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No prediction yet for game {game_id}. Start ingestion with POST /v1/games/{game_id}/start"
+            )
     
     try:
         p_home = float(data["p_home_win"])
