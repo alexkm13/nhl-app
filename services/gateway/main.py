@@ -743,6 +743,45 @@ async def get_winprob_friendly(game_id: str):
     except Exception:
         raise HTTPException(status_code=404, detail="No prediction yet for this game")
 
+@app.get("/v1/games/{game_id}/final")
+async def get_final_score(game_id: str):
+    """Get final score and game state for a completed game"""
+    try:
+        # Fetch game data directly from NHL API
+        game_data = await fetch_nhl_play_by_play(game_id)
+        if not game_data:
+            raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
+        
+        game_state = game_data.get("gameState", "")
+        home_team = game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home Team")
+        away_team = game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away Team")
+        home_score = game_data.get("homeTeam", {}).get("score", 0)
+        away_score = game_data.get("awayTeam", {}).get("score", 0)
+        
+        # Determine winner
+        winner = None
+        if home_score > away_score:
+            winner = "HOME"
+        elif away_score > home_score:
+            winner = "AWAY"
+        else:
+            winner = "TIE"
+        
+        return {
+            "game_id": game_id,
+            "game_state": game_state,
+            "is_final": game_state in ["OFF", "FINAL"],
+            "home_team": home_team,
+            "away_team": away_team,
+            "home_score": home_score,
+            "away_score": away_score,
+            "winner": winner
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching final score: {str(e)}")
+
 @app.get("/v1/games/{game_id}/playbyplay")
 async def get_playbyplay(game_id: str, limit: int = 30):
     """Get play-by-play events for a game directly from NHL API"""

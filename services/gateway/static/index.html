@@ -270,7 +270,7 @@
             }
         }
 
-        function displayResults(data) {
+        async function displayResults(data) {
             const gameDetails = document.getElementById('gameDetails');
             const game = data.game;
             const score = data.score;
@@ -286,6 +286,56 @@
             const awayProb = winProb[awayTeam];
 
             const gameId = data.game.id;
+            
+            // Check if game is final
+            let isFinal = false;
+            let finalData = null;
+            try {
+                const finalResponse = await fetch(`${API_BASE}/v1/games/${gameId}/final`);
+                if (finalResponse.ok) {
+                    finalData = await finalResponse.json();
+                    isFinal = finalData.is_final;
+                }
+            } catch (error) {
+                console.error('Error checking final score:', error);
+            }
+            
+            // If game is final, show final score display
+            if (isFinal && finalData) {
+                const finalHomeTeam = finalData.home_team;
+                const finalAwayTeam = finalData.away_team;
+                const finalHomeScore = finalData.home_score;
+                const finalAwayScore = finalData.away_score;
+                const winner = finalData.winner;
+                
+                // Determine winner and loser
+                const homeIsWinner = winner === "HOME";
+                const awayIsWinner = winner === "AWAY";
+                const isTie = winner === "TIE";
+                
+                gameDetails.innerHTML = `
+                    <div class="final-score-container">
+                        <div class="final-score-header">
+                            <span class="final-status">▼ Final</span>
+                        </div>
+                        <div class="final-score-teams">
+                            <div class="final-team-row ${awayIsWinner ? 'winner' : 'loser'}">
+                                <div class="final-team-name">${finalAwayTeam}</div>
+                                <div class="final-team-score">${finalAwayScore}</div>
+                            </div>
+                            <div class="final-team-row ${homeIsWinner ? 'winner' : 'loser'}">
+                                ${homeIsWinner ? '<div class="final-winner-indicator">▶</div>' : ''}
+                                <div class="final-team-name">${finalHomeTeam}</div>
+                                <div class="final-team-score">${finalHomeScore}</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                gameDetails.style.display = 'block';
+                gameDetails.classList.add('show');
+                gameDetails.scrollIntoView({ behavior: 'smooth' });
+                return;
+            }
             
             gameDetails.innerHTML = `
                 <div style="margin-bottom: 20px;">
