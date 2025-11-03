@@ -15,17 +15,8 @@
         <!-- Dates will be populated by JavaScript -->
     </div>
 
-    <div class="input-section">
-        <div class="input-group">
-            <div class="input-field">
-                <label for="gameId">Game ID</label>
-                <input type="text" id="gameId" placeholder="Enter game ID (e.g., 2025020011)" />
-            </div>
-            <button id="startBtn" onclick="startIngestion()">Start Analysis</button>
-        </div>
-        <div id="status" class="status"></div>
-        <div id="loading" class="spinner" style="display: none;"></div>
-    </div>
+    <div id="status" class="status"></div>
+    <div id="loading" class="spinner" style="display: none;"></div>
 
     <div class="main-container">
         <div class="section">
@@ -216,25 +207,35 @@
             }
         }
 
-        function selectGame(gameId) {
-            document.getElementById('gameId').value = gameId;
-            startIngestion();
+        async function selectGame(gameId) {
+            // Hide games list and show loading
+            showGameDetails();
+            const loading = document.getElementById('loading');
+            loading.style.display = 'block';
+            showStatus('Loading game...', 'info');
+            
+            // Try to fetch results directly first
+            try {
+                const response = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    displayResults(data);
+                    loading.style.display = 'none';
+                    showStatus('Game loaded successfully!', 'success');
+                    return;
+                }
+            } catch (error) {
+                // If fetch fails, start ingestion
+                console.log('Game data not available, starting ingestion...');
+            }
+            
+            // If results aren't available, start ingestion
+            await startIngestionForGame(gameId);
         }
 
-        async function startIngestion() {
-            const gameId = document.getElementById('gameId').value.trim();
-            if (!gameId) {
-                showStatus('Please enter a game ID', 'error');
-                return;
-            }
-
-            const startBtn = document.getElementById('startBtn');
-            const status = document.getElementById('status');
+        async function startIngestionForGame(gameId) {
             const loading = document.getElementById('loading');
-            const gameDetails = document.getElementById('gameDetails');
-
-            startBtn.disabled = true;
-            gameDetails.style.display = 'none';
             loading.style.display = 'block';
             showStatus('Starting ingestion...', 'info');
 
@@ -250,12 +251,10 @@
                 } else {
                     showStatus(`Error: ${data.detail || 'Unknown error'}`, 'error');
                     loading.style.display = 'none';
-                    startBtn.disabled = false;
                 }
             } catch (error) {
                 showStatus(`Error: ${error.message}`, 'error');
                 loading.style.display = 'none';
-                startBtn.disabled = false;
             }
         }
 
@@ -292,7 +291,6 @@
                 if (statusData.ingestion_status === 'failed') {
                     showStatus(`Ingestion failed: ${statusData.error || 'Unknown error'}`, 'error');
                     loading.style.display = 'none';
-                    document.getElementById('startBtn').disabled = false;
                     return;
                 }
 
@@ -303,7 +301,6 @@
                 const errorMsg = error.message || 'Network error';
                 showStatus(`Error checking status: ${errorMsg}`, 'error');
                 loading.style.display = 'none';
-                document.getElementById('startBtn').disabled = false;
             }
         }
 
@@ -319,7 +316,6 @@
                 if (response.ok) {
                     displayResults(data);
                     loading.style.display = 'none';
-                    startBtn.disabled = false;
                     showStatus('Results loaded successfully!', 'success');
                 } else if (response.status === 202) {
                     showStatus(data.detail, 'info');
@@ -327,12 +323,10 @@
                 } else {
                     showStatus(`${data.detail || 'Error fetching results'}`, 'error');
                     loading.style.display = 'none';
-                    startBtn.disabled = false;
                 }
             } catch (error) {
                 showStatus(`Error: ${error.message}`, 'error');
                 loading.style.display = 'none';
-                startBtn.disabled = false;
             }
         }
 
@@ -806,13 +800,6 @@
         window.addEventListener('DOMContentLoaded', async function() {
             initDateSelector();
             await loadGamesList();
-        });
-
-        // Allow Enter key to submit
-        document.getElementById('gameId').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                startIngestion();
-            }
         });
     </script>
 </body>
