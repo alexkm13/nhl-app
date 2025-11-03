@@ -286,6 +286,150 @@
             animation: spin 1s linear infinite;
             margin: 20px auto;
         }
+
+        .tabs {
+            display: flex;
+            border-bottom: 2px solid #e0e0e0;
+            margin: 30px 0 20px 0;
+        }
+
+        .tab {
+            padding: 12px 24px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-size: 16px;
+            font-weight: 600;
+            color: #666;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s;
+        }
+
+        .tab.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .playbyplay-feed {
+            max-height: 600px;
+            overflow-y: auto;
+            background: #1a1a1a;
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+
+        .playbyplay-event {
+            display: flex;
+            padding: 15px;
+            border-bottom: 1px solid #333;
+            color: white;
+            transition: background 0.2s;
+        }
+
+        .playbyplay-event:hover {
+            background: #2a2a2a;
+        }
+
+        .playbyplay-event:last-child {
+            border-bottom: none;
+        }
+
+        .event-player-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: #667eea;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 18px;
+            margin-right: 15px;
+            flex-shrink: 0;
+        }
+
+        .event-content {
+            flex: 1;
+        }
+
+        .event-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            font-size: 0.85em;
+            color: #aaa;
+        }
+
+        .event-score {
+            font-weight: 600;
+        }
+
+        .event-time {
+            color: #888;
+        }
+
+        .event-description {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .event-player {
+            font-size: 14px;
+            color: #aaa;
+        }
+
+        .event-strength {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75em;
+            margin-left: 8px;
+            background: rgba(102, 126, 234, 0.3);
+        }
+
+        .event-strength.ENPP {
+            background: rgba(255, 193, 7, 0.3);
+        }
+
+        .event-strength.EN {
+            background: rgba(255, 152, 0, 0.3);
+        }
+
+        .event-strength.PP {
+            background: rgba(76, 175, 80, 0.3);
+        }
+
+        .event-strength.PK {
+            background: rgba(244, 67, 54, 0.3);
+        }
+
+        .team-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.75em;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+
+        .team-badge.HOME {
+            background: rgba(102, 126, 234, 0.3);
+        }
+
+        .team-badge.AWAY {
+            background: rgba(156, 39, 176, 0.3);
+        }
     </style>
 </head>
 <body>
@@ -446,6 +590,7 @@
             const homeProb = winProb[homeTeam];
             const awayProb = winProb[awayTeam];
 
+            const gameId = data.game.id;
             results.innerHTML = `
                 <div class="game-card">
                     <div class="game-header">
@@ -467,43 +612,59 @@
                         </div>
                     </div>
 
-                    <div class="situation">
-                        <div class="situation-label">Current Situation</div>
-                        <div class="situation-value">${situation.strength}${situation.empty_net && !situation.strength.toLowerCase().includes('empty net') ? ' 🚪 Empty Net' : ''}</div>
-                        <div class="situation-value" style="font-size: 0.9em; margin-top: 5px; opacity: 0.9;">
-                            Last Event: ${situation.last_event}${situation.last_player ? ` by ${situation.last_player}` : ''}
+                    <div class="tabs">
+                        <button class="tab active" onclick="switchTab('overview', '${gameId}')">Overview</button>
+                        <button class="tab" onclick="switchTab('playbyplay', '${gameId}')">Play-by-Play</button>
+                    </div>
+
+                    <div id="overview-tab" class="tab-content active">
+                        <div class="situation">
+                            <div class="situation-label">Current Situation</div>
+                            <div class="situation-value">${situation.strength}${situation.empty_net && !situation.strength.toLowerCase().includes('empty net') ? ' 🚪 Empty Net' : ''}</div>
+                            <div class="situation-value" style="font-size: 0.9em; margin-top: 5px; opacity: 0.9;">
+                                Last Event: ${situation.last_event}${situation.last_player ? ` by ${situation.last_player}` : ''}
+                            </div>
+                        </div>
+
+                        <div class="win-prob">
+                            <div class="win-prob-title">Win Probability</div>
+                            <div class="win-prob-bars">
+                                <div class="win-prob-bar">
+                                    <div class="win-prob-bar-label">
+                                        <span>${homeTeam}</span>
+                                        <span>${homeProb}%</span>
+                                    </div>
+                                    <div class="win-prob-bar-fill">
+                                        <div class="win-prob-bar-progress" style="width: ${homeProb}%">${homeProb}%</div>
+                                    </div>
+                                </div>
+                                <div class="win-prob-bar">
+                                    <div class="win-prob-bar-label">
+                                        <span>${awayTeam}</span>
+                                        <span>${awayProb}%</span>
+                                    </div>
+                                    <div class="win-prob-bar-fill">
+                                        <div class="win-prob-bar-progress" style="width: ${awayProb}%">${awayProb}%</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="confidence">
+                                <div class="confidence-label">Confidence</div>
+                                <div class="confidence-value">${data.confidence}</div>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="win-prob">
-                        <div class="win-prob-title">Win Probability</div>
-                        <div class="win-prob-bars">
-                            <div class="win-prob-bar">
-                                <div class="win-prob-bar-label">
-                                    <span>${homeTeam}</span>
-                                    <span>${homeProb}%</span>
-                                </div>
-                                <div class="win-prob-bar-fill">
-                                    <div class="win-prob-bar-progress" style="width: ${homeProb}%">${homeProb}%</div>
-                                </div>
-                            </div>
-                            <div class="win-prob-bar">
-                                <div class="win-prob-bar-label">
-                                    <span>${awayTeam}</span>
-                                    <span>${awayProb}%</span>
-                                </div>
-                                <div class="win-prob-bar-fill">
-                                    <div class="win-prob-bar-progress" style="width: ${awayProb}%">${awayProb}%</div>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="confidence">
-                            <div class="confidence-label">Confidence</div>
-                            <div class="confidence-value">${data.confidence}</div>
+                    <div id="playbyplay-tab" class="tab-content">
+                        <div id="playbyplay-feed" class="playbyplay-feed">
+                            <div class="spinner"></div>
                         </div>
                     </div>
                 </div>
             `;
+            
+            // Load play-by-play feed
+            loadPlayByPlay(gameId, homeTeam, awayTeam);
 
             results.style.display = 'block';
             results.classList.add('show');
@@ -514,6 +675,84 @@
             status.textContent = message;
             status.className = `status ${type}`;
             status.style.display = 'block';
+        }
+
+        function switchTab(tabName, gameId) {
+            // Update tab buttons
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+                if (tab.textContent.trim() === (tabName === 'overview' ? 'Overview' : 'Play-by-Play')) {
+                    tab.classList.add('active');
+                }
+            });
+
+            // Update tab content
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            document.getElementById(`${tabName}-tab`).classList.add('active');
+
+            // Load play-by-play if switching to that tab
+            if (tabName === 'playbyplay') {
+                const feed = document.getElementById('playbyplay-feed');
+                if (feed && (!feed.innerHTML.trim() || feed.innerHTML.includes('spinner'))) {
+                    loadPlayByPlay(gameId);
+                }
+            }
+        }
+
+        async function loadPlayByPlay(gameId, homeTeam, awayTeam) {
+            const feed = document.getElementById('playbyplay-feed');
+            if (!feed) return;
+
+            feed.innerHTML = '<div class="spinner"></div>';
+
+            try {
+                const response = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=50`);
+                const data = await response.json();
+
+                if (response.ok && data.events) {
+                    if (data.events.length === 0) {
+                        feed.innerHTML = '<div style="color: #aaa; text-align: center; padding: 40px;">No events yet. Start ingestion to see play-by-play.</div>';
+                        return;
+                    }
+
+                    // Calculate relative times (events are sorted most recent first)
+                    const mostRecentTime = data.events[0]?.timestamp || Date.now() / 1000;
+
+                    feed.innerHTML = data.events.map((event, index) => {
+                        const timeAgo = Math.round((mostRecentTime - event.timestamp) / 60);
+                        const timeStr = timeAgo === 0 ? 'Just now' : `${timeAgo}m ago`;
+                        const playerInitials = event.player ? event.player.split(' ').map(n => n[0]).join('').substring(0, 2) : '?';
+                        const strengthClass = event.strength || 'EV';
+                        const teamClass = event.team || 'HOME';
+                        
+                        return `
+                            <div class="playbyplay-event">
+                                <div class="event-player-avatar">${playerInitials}</div>
+                                <div class="event-content">
+                                    <div class="event-header">
+                                        <span class="event-score">${event.home_score} - ${event.away_score}</span>
+                                        <span class="event-time">${timeStr}</span>
+                                    </div>
+                                    <div class="event-description">
+                                        ${event.description}
+                                        <span class="event-strength ${strengthClass}">${event.strength}</span>
+                                        <span class="team-badge ${teamClass}">${teamClass}</span>
+                                    </div>
+                                    <div class="event-player">
+                                        ${event.player || 'Unknown Player'}
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    feed.innerHTML = '<div style="color: #aaa; text-align: center; padding: 40px;">Error loading play-by-play.</div>';
+                }
+            } catch (error) {
+                feed.innerHTML = `<div style="color: #aaa; text-align: center; padding: 40px;">Error: ${error.message}</div>`;
+            }
         }
 
         // Allow Enter key to submit
