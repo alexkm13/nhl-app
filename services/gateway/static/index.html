@@ -362,24 +362,34 @@
             
             const homeLogo = score.home.logo || '';
             const awayLogo = score.away.logo || '';
+            const isLive = game.is_live || false;
+            const period = game.period || 1;
+            const timeInPeriod = game.time_in_period || '00:00';
+            
+            // Format time: convert MM:SS to minutes (e.g., "19:46" -> "19'")
+            let timeDisplay = '';
+            if (timeInPeriod) {
+                const [minutes, seconds] = timeInPeriod.split(':');
+                timeDisplay = `${minutes}'`;
+            } else {
+                timeDisplay = `P${period}`;
+            }
             
             gameDetails.innerHTML = `
-                <div style="margin-bottom: 20px;">
-                    <div style="font-size: 1.5em; font-weight: 700; margin-bottom: 10px;">${game.matchup}</div>
-                    <div style="color: #aaaaaa; font-size: 0.9em;">${game.favorite}</div>
-                </div>
-
-                <div class="score-display-container">
-                    <div class="score-team">
-                        <img src="${awayLogo}" alt="${awayTeam}" class="score-logo" onerror="this.style.display='none'">
-                        <div class="score-team-name">${awayTeam}</div>
-                        <div class="score-number">${awayScore}</div>
+                <div class="live-score-container">
+                    <div class="live-team-left">
+                        <img src="${awayLogo}" alt="${awayTeam}" class="live-team-logo" onerror="this.style.display='none'">
+                        <div class="live-team-score">${awayScore}</div>
+                        <div class="live-team-name">${awayTeam}</div>
                     </div>
-                    <div class="score-separator">-</div>
-                    <div class="score-team">
-                        <img src="${homeLogo}" alt="${homeTeam}" class="score-logo" onerror="this.style.display='none'">
-                        <div class="score-team-name">${homeTeam}</div>
-                        <div class="score-number">${homeScore}</div>
+                    <div class="live-time-container">
+                        ${isLive ? '<div class="live-indicator"></div>' : ''}
+                        <div class="live-time">${timeDisplay}</div>
+                    </div>
+                    <div class="live-team-right">
+                        <div class="live-team-score">${homeScore}</div>
+                        <div class="live-team-name">${homeTeam}</div>
+                        <img src="${homeLogo}" alt="${homeTeam}" class="live-team-logo" onerror="this.style.display='none'">
                     </div>
                 </div>
 

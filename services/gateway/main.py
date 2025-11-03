@@ -634,6 +634,29 @@ async def get_winprob_friendly(game_id: str):
         p_home = float(data["p_home_win"])
         p_away = 1.0 - p_home
         
+        # Get current game time from NHL API
+        game_data = await fetch_nhl_play_by_play(game_id)
+        game_state = ""
+        period = None
+        time_in_period = ""
+        period_descriptor = None
+        
+        if game_data:
+            game_state = game_data.get("gameState", "")
+            period_descriptor = game_data.get("periodDescriptor", {})
+            period = period_descriptor.get("number", 1)
+            
+            # Get the most recent play to get current time
+            plays = game_data.get("plays", [])
+            if plays:
+                # Get the last non-stoppage play
+                for play in reversed(plays):
+                    type_code = play.get("typeCode")
+                    if type_code not in [520, 516, 517, 524]:  # Skip period-start, stoppage, period-end, game-end
+                        time_in_period = play.get("timeInPeriod", "00:00")
+                        period = play.get("periodDescriptor", {}).get("number", period)
+                        break
+        
         # Get current score
         state_key = f"state:{game_id}"
         state = await r.hgetall(state_key)
@@ -727,7 +750,11 @@ async def get_winprob_friendly(game_id: str):
             "game": {
                 "id": game_id,
                 "matchup": f"{away_team} @ {home_team}",
-                "favorite": favorite
+                "favorite": favorite,
+                "game_state": game_state,
+                "period": period,
+                "time_in_period": time_in_period,
+                "is_live": game_state in ["LIVE", "CRIT"]
             },
             "score": {
                 "home": {

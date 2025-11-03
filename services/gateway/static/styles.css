@@ -459,6 +459,81 @@ button:disabled {
     color: #ffffff;
 }
 
+.live-score-container {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 30px 40px;
+    background: #1a1a1a;
+    border-radius: 12px;
+    margin-bottom: 30px;
+}
+
+.live-team-left {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+    flex: 1;
+}
+
+.live-team-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 12px;
+    flex: 1;
+}
+
+.live-team-logo {
+    width: 60px;
+    height: 60px;
+    object-fit: contain;
+}
+
+.live-team-score {
+    font-size: 2.5em;
+    font-weight: 700;
+    color: #ffffff;
+}
+
+.live-team-name {
+    font-size: 0.95em;
+    color: #ffffff;
+    font-weight: 500;
+}
+
+.live-time-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.live-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ff4d6d;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.live-time {
+    font-size: 2.5em;
+    font-weight: 700;
+    color: #ffffff;
+}
+
 .win-prob {
     margin-top: 20px;
     padding: 20px;
