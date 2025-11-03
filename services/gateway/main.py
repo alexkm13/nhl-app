@@ -1248,46 +1248,27 @@ async def get_playbyplay(game_id: str, limit: int = 30):
             if mapped_type == "GOAL":
                 # Get shot type and build descriptive goal description
                 shot_type = details.get("shotType", "").lower()
-                zone_code = details.get("zoneCode", "")
                 
                 # Calculate distance from goal
                 # NHL rink coordinates: center ice is x=0, goals are at x=89 and x=-89, y=0
-                # x-coordinate: positive = attacking end (x=89 goal), negative = defending end (x=-89 goal)
+                # HOME team attacks +x end (x=89 goal)
+                # AWAY team attacks -x end (x=-89 goal)
                 x_coord = details.get("xCoord")
                 y_coord = details.get("yCoord")
                 distance = None
                 
                 if x_coord is not None and y_coord is not None:
-                    # Determine which goal was scored on
-                    # NHL rink: goals are at x=89 (positive end) and x=-89 (negative end)
-                    # In offensive zone (O), team is attacking:
-                    #   HOME team attacks +x end (x=89)
-                    #   AWAY team attacks -x end (x=-89)
-                    # Use zone code to determine which goal, not just x-coordinate
-                    if zone_code == "O":
-                        # Offensive zone - determine goal based on team
-                        if team == "HOME":
-                            goal_x = 89  # HOME attacks +x end
-                        else:  # AWAY
-                            goal_x = -89  # AWAY attacks -x end
-                    elif zone_code == "D":
-                        # Defensive zone - opposite goal
-                        if team == "HOME":
-                            goal_x = -89  # Their own goal
-                        else:  # AWAY
-                            goal_x = 89  # Their own goal
-                    else:
-                        # Neutral zone or unknown - use closest goal based on x-coordinate
-                        dist_to_89 = math.sqrt((x_coord - 89)**2 + (y_coord - 0)**2)
-                        dist_to_neg89 = math.sqrt((x_coord - (-89))**2 + (y_coord - 0)**2)
-                        if dist_to_89 < dist_to_neg89:
-                            goal_x = 89
-                        else:
-                            goal_x = -89
+                    # For a goal, the scoring team was attacking their opponent's goal
+                    # HOME team scores on the goal at x=89
+                    # AWAY team scores on the goal at x=-89
+                    if team == "HOME":
+                        goal_x = 89  # HOME attacks +x end
+                    else:  # AWAY
+                        goal_x = -89  # AWAY attacks -x end
                     
                     goal_y = 0
                     
-                    # Calculate distance in feet
+                    # Calculate distance in feet from shot location to goal
                     distance = math.sqrt((x_coord - goal_x)**2 + (y_coord - goal_y)**2)
                     # Round to nearest foot
                     distance = int(round(distance))
