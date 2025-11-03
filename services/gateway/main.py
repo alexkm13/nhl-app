@@ -6,6 +6,8 @@ import subprocess
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from nhlpy import NHLClient
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from pydantic import BaseModel
@@ -14,8 +16,21 @@ from redis.asyncio import Redis
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 app = FastAPI(title="GameCast++ Gateway")
 
+# Serve static files
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
 # Initialize NHL client
 nhl_client = NHLClient()
+
+@app.get("/")
+async def root():
+    """Serve the main web interface"""
+    static_file = os.path.join(static_dir, "index.html")
+    if os.path.exists(static_file):
+        return FileResponse(static_file)
+    return {"message": "NHL Game Predictor API", "docs": "/docs"}
 
 class WinProb(BaseModel):
     game_id: str
