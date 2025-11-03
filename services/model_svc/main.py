@@ -1,10 +1,16 @@
-import asyncio, os, json, random, time
-from redis.asyncio import Redis
+import asyncio
 import os
+import json
+import random
+import time
+
 import psycopg
-from prometheus_client import start_http_server, Counter, Histogram
-DATABASE_URL = os.environ.get('DATABASE_URL', '')
+from prometheus_client import Counter, Histogram, start_http_server
+from redis.asyncio import Redis
+
 from model import BaselineModel
+
+DATABASE_URL = os.environ.get('DATABASE_URL', '')
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 MODEL_ID = os.environ.get("MODEL_ID", "baseline-logit-v0")

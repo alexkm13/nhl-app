@@ -1,6 +1,6 @@
+from typing import Literal, Optional
+
 from pydantic import BaseModel, Field
-from typing import Optional, Literal
-from datetime import datetime
 
 Team = Literal["HOME", "AWAY"]
 Strength = Literal["EV", "PP", "PK"]

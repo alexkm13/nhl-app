@@ -1,8 +1,9 @@
-import os, json, asyncio
-from typing import Optional
+import json
+import os
+
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from pydantic import BaseModel
-from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 from redis.asyncio import Redis
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")

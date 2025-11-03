@@ -1,8 +1,14 @@
-import asyncio, os, json, random, time
-from datetime import datetime, timezone
-from redis.asyncio import Redis
-from events import GameEvent
+import asyncio
+import json
+import os
+import random
+import time
+
 import psycopg
+from redis.asyncio import Redis
+
+from events import GameEvent
+
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
@@ -18,7 +24,6 @@ async def ensure_streams(r: Redis):
 
 async def produce_synthetic_game(r: Redis, game_id: str):
     print(f"[ingestor] starting synthetic game for {game_id}")
-    home, away = 0, 0
     start = time.time()
     clock_total = 20 * 60  # 20 minutes demo
 

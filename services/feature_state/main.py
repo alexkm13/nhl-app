@@ -1,11 +1,14 @@
-import asyncio, os, json, random
-from typing import Dict, Any
-from redis.asyncio import Redis
+import asyncio
+import json
 import os
-import psycopg
-DATABASE_URL = os.environ.get('DATABASE_URL', '')
+import random
+from typing import Dict
 
+import psycopg
+from redis.asyncio import Redis
 from state import GameState
+
+DATABASE_URL = os.environ.get('DATABASE_URL', '')
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 STREAM_EVENTS = "events"
@@ -18,7 +21,7 @@ async def create_group_if_needed(r: Redis, stream: str, group: str):
         # MKSTREAM ensures the stream exists
         await r.xgroup_create(stream, group, id="$", mkstream=True)
         print(f"[feature_state] created group {group} on {stream}")
-    except Exception as e:
+    except Exception:
         # Group probably exists
         pass
 
