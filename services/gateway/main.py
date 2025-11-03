@@ -121,27 +121,69 @@ async def run_ingestion(game_id: str, redis: Redis):
             else:
                 team = "HOME" if play.get("homeTeamDefendingSide") == "right" else "AWAY"
             
-            # Get strength
+            # Get strength with empty net and shorthanded detection
             situation = play.get("situationCode", "1551")
             away_skaters = int(situation[1]) if len(situation) >= 2 else 5
             home_skaters = int(situation[3]) if len(situation) >= 4 else 5
             
+            # Detect empty net situations (6 skaters or 0 skaters = goalie pulled)
+            empty_net = False
+            if away_skaters == 6 or home_skaters == 6 or away_skaters == 0 or home_skaters == 0:
+                empty_net = True
+            
+            # Determine strength from the event-owning team's perspective
             if team == "HOME":
-                if home_skaters == 5 and away_skaters == 5:
+                if empty_net:
+                    if home_skaters == 6:
+                        if away_skaters < 5:
+                            strength = "ENPP"  # Empty net + power play
+                        else:
+                            strength = "EN"  # Empty net even strength
+                    elif away_skaters == 6:
+                        if home_skaters < 5:
+                            strength = "ENPK"  # Empty net + penalty kill
+                        else:
+                            strength = "PK"  # Penalty kill (away has empty net)
+                    elif home_skaters == 0:
+                        strength = "PK"  # Home is shorthanded
+                    elif away_skaters == 0:
+                        strength = "PP"  # Home is on power play
+                elif home_skaters == 5 and away_skaters == 5:
                     strength = "EV"
                 elif home_skaters > away_skaters:
                     strength = "PP"
                 elif home_skaters < away_skaters:
-                    strength = "PK"
+                    if home_skaters < 5:
+                        strength = "SH"  # Shorthanded
+                    else:
+                        strength = "PK"
                 else:
                     strength = "EV"
-            else:
-                if away_skaters == 5 and home_skaters == 5:
+            else:  # team == "AWAY"
+                if empty_net:
+                    if away_skaters == 6:
+                        if home_skaters < 5:
+                            strength = "ENPP"  # Empty net + power play
+                        else:
+                            strength = "EN"  # Empty net even strength
+                    elif home_skaters == 6:
+                        if away_skaters < 5:
+                            strength = "ENPK"  # Empty net + penalty kill
+                        else:
+                            strength = "PK"  # Penalty kill (home has empty net)
+                    elif away_skaters == 0:
+                        strength = "PK"  # Away is shorthanded
+                    elif home_skaters == 0:
+                        strength = "PP"  # Away is on power play
+                elif away_skaters == 5 and home_skaters == 5:
                     strength = "EV"
                 elif away_skaters > home_skaters:
                     strength = "PP"
                 elif away_skaters < home_skaters:
-                    strength = "PK"
+                    if away_skaters < 5:
+                        strength = "SH"  # Shorthanded
+                    else:
+                        strength = "PK"
                 else:
                     strength = "EV"
             
@@ -174,6 +216,7 @@ async def run_ingestion(game_id: str, redis: Redis):
                 "team": team,
                 "event_type": mapped_type,
                 "strength": strength,
+                "empty_net": empty_net,
                 "x": x,
                 "y": y,
                 "shot_quality": random.random(),
@@ -383,6 +426,8 @@ async def get_winprob_friendly(game_id: str):
         home_score = int(state.get("home_score", 0))
         away_score = int(state.get("away_score", 0))
         strength = state.get("strength", "EV")
+        empty_net_str = state.get("empty_net", "False")
+        empty_net = empty_net_str.lower() == "true" if isinstance(empty_net_str, str) else bool(empty_net_str)
         last_event = state.get("last_event", "Unknown")
         
         # Get team names dynamically from NHL API
@@ -406,12 +451,22 @@ async def get_winprob_friendly(game_id: str):
                 home_team = "Home Team"
                 away_team = "Away Team"
         
-        # Format strength
+        # Format strength with empty net and shorthanded indicators
         strength_names = {
             "EV": "Even Strength (5v5)",
             "PP": "Power Play",
-            "PK": "Shorthanded"
+            "PK": "Shorthanded",
+            "EN": "Empty Net",
+            "ENPP": "Empty Net + Power Play",
+            "ENPK": "Empty Net + Shorthanded",
+            "SH": "Shorthanded"
         }
+        
+        # Build situation description
+        situation_parts = [strength_names.get(strength, strength)]
+        if empty_net and strength not in ["EN", "ENPP", "ENPK"]:
+            situation_parts.append("Empty Net")
+        situation_description = " + ".join(situation_parts) if len(situation_parts) > 1 else situation_parts[0]
         
         # Determine favorite
         if p_home > 0.55:
@@ -439,7 +494,8 @@ async def get_winprob_friendly(game_id: str):
                 "display": f"{home_team} {home_score} - {away_score} {away_team}"
             },
             "current_situation": {
-                "strength": strength_names.get(strength, strength),
+                "strength": situation_description,
+                "empty_net": empty_net,
                 "last_event": last_event
             },
             "win_probability": {

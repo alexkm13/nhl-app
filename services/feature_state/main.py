@@ -45,6 +45,7 @@ async def process_events():
                     team = payload["team"]
                     ts = payload["ts"]
                     strength = payload.get("strength", "EV")
+                    empty_net = payload.get("empty_net", False)
 
                     # Track first event time for this game
                     if game_id not in game_starts:
@@ -53,6 +54,7 @@ async def process_events():
                     state = states.get(game_id) or GameState(game_id=game_id, ts=ts)
                     state.ts = ts - game_starts[game_id]  # Convert to relative time
                     state.strength = strength
+                    state.empty_net = empty_net
                     state.last_event = ev
                     if ev == "GOAL":
                         state.goal(team)

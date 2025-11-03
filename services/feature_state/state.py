@@ -7,7 +7,8 @@ class GameState(BaseModel):
     ts: float
     home_score: int = 0
     away_score: int = 0
-    strength: Literal["EV", "PP", "PK"] = "EV"
+    strength: Literal["EV", "PP", "PK", "EN", "ENPP", "ENPK", "SH"] = "EV"
+    empty_net: bool = False
     last_event: str = "FACEOFF"
 
     def goal(self, team: str):

@@ -173,30 +173,81 @@ async def produce_nhl_game(r: Redis, nhl_client: NHLClient, game_id: str):
         
         # Get situation/strength from NHL API situationCode
         # Format: ABCD where B=away_skaters, D=home_skaters
-        # E.g., "1551" = 5v5 even strength, "1451" = 4v5
+        # E.g., "1551" = 5v5 even strength, "1451" = 4v5, "0651" = 6v1 (empty net)
         situation = play.get("situationCode", "1551")
         away_skaters = int(situation[1]) if len(situation) >= 2 else 5
         home_skaters = int(situation[3]) if len(situation) >= 4 else 5
         
+        # Detect empty net situations (6 skaters or 0 skaters = goalie pulled)
+        empty_net = False
+        if away_skaters == 6 or home_skaters == 6 or away_skaters == 0 or home_skaters == 0:
+            empty_net = True
+        
         # Determine strength from the event-owning team's perspective
         if team == "HOME":
             # For home team: check home skaters vs away skaters
-            if home_skaters == 5 and away_skaters == 5:
+            if empty_net:
+                # Empty net situations
+                if home_skaters == 6:
+                    # Home has empty net (6 skaters)
+                    if away_skaters < 5:
+                        strength = "ENPP"  # Empty net + power play
+                    else:
+                        strength = "EN"  # Empty net even strength
+                elif away_skaters == 6:
+                    # Away has empty net (6 skaters)
+                    if home_skaters < 5:
+                        strength = "ENPK"  # Empty net + penalty kill
+                    else:
+                        strength = "PK"  # Penalty kill (away has empty net)
+                elif home_skaters == 0:
+                    # Home goalie pulled (0 skaters = empty net)
+                    strength = "PK"  # Home is shorthanded
+                elif away_skaters == 0:
+                    # Away goalie pulled (0 skaters = empty net)
+                    strength = "PP"  # Home is on power play
+            elif home_skaters == 5 and away_skaters == 5:
                 strength = "EV"
             elif home_skaters > away_skaters:
                 strength = "PP"  # Home has more skaters = home power play
             elif home_skaters < away_skaters:
-                strength = "PK"  # Home has fewer skaters = home penalty kill
+                if home_skaters < 5:
+                    strength = "SH"  # Shorthanded (not penalty kill, just fewer skaters)
+                else:
+                    strength = "PK"  # Home has fewer skaters = home penalty kill
             else:
                 strength = "EV"
         else:  # team == "AWAY"
             # For away team: check away skaters vs home skaters
-            if away_skaters == 5 and home_skaters == 5:
+            if empty_net:
+                # Empty net situations
+                if away_skaters == 6:
+                    # Away has empty net (6 skaters)
+                    if home_skaters < 5:
+                        strength = "ENPP"  # Empty net + power play
+                    else:
+                        strength = "EN"  # Empty net even strength
+                elif home_skaters == 6:
+                    # Home has empty net (6 skaters)
+                    if away_skaters < 5:
+                        strength = "ENPK"  # Empty net + penalty kill
+                    else:
+                        strength = "PK"  # Penalty kill (home has empty net)
+                elif away_skaters == 0:
+                    # Away goalie pulled (0 skaters = empty net)
+                    strength = "PK"  # Away is shorthanded
+                elif home_skaters == 0:
+                    # Home goalie pulled (0 skaters = empty net)
+                    strength = "PP"  # Away is on power play
+            elif away_skaters == 5 and home_skaters == 5:
                 strength = "EV"
             elif away_skaters > home_skaters:
                 strength = "PP"  # Away has more skaters = away power play
             elif away_skaters < home_skaters:
-                strength = "PK"  # Away has fewer skaters = away penalty kill
+                if away_skaters < 5:
+                    strength = "SH"  # Shorthanded (not penalty kill, just fewer skaters)
+                else:
+                    strength = "PK"  # Away has fewer skaters = away penalty kill
             else:
                 strength = "EV"
         
@@ -237,6 +288,7 @@ async def produce_nhl_game(r: Redis, nhl_client: NHLClient, game_id: str):
             team=team,
             event_type=mapped_type,
             strength=strength,
+            empty_net=empty_net,
             x=x,
             y=y,
             shot_quality=random.random(),
