@@ -723,6 +723,44 @@ button:disabled {
     font-size: 0.9em;
 }
 
+.win-prob-graph-container {
+    width: 100%;
+}
+
+.win-prob-graph-labels {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 15px;
+}
+
+.win-prob-graph-team-left,
+.win-prob-graph-team-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 600;
+    color: #ffffff;
+}
+
+.win-prob-graph-team-left {
+    flex-direction: row;
+}
+
+.win-prob-graph-team-right {
+    flex-direction: row-reverse;
+}
+
+.win-prob-graph-percentage {
+    font-size: 1.2em;
+    font-weight: 700;
+}
+
+.win-prob-graph {
+    width: 100%;
+    max-width: 600px;
+    height: 200px;
+}
+
 .tabs {
     display: flex;
     gap: 10px;

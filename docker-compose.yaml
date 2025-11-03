@@ -40,8 +40,11 @@ services:
     build: ./services/gateway
     environment:
       - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://postgres:postgres@timescaledb:5432/gamecast
     depends_on:
       redis:
+        condition: service_healthy
+      timescaledb:
         condition: service_healthy
     ports:
       - "8000:8000"

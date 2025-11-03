@@ -353,6 +353,18 @@
 
             const gameId = data.game.id;
             
+            // Fetch historical win probability data for graphing
+            let historyData = [];
+            try {
+                const historyResponse = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/history`);
+                if (historyResponse.ok) {
+                    const historyResult = await historyResponse.json();
+                    historyData = historyResult.data || [];
+                }
+            } catch (error) {
+                console.error('Error fetching win probability history:', error);
+            }
+            
             // Check if game is final
             let isFinal = false;
             let finalData = null;
@@ -433,24 +445,7 @@
 
                     <div class="win-prob">
                         <div class="win-prob-title">Win Probability</div>
-                        <div class="win-prob-bar">
-                            <div class="win-prob-bar-label">
-                                <span>${homeTeam}</span>
-                                <span>${homeProb}%</span>
-                            </div>
-                            <div class="win-prob-bar-fill">
-                                <div class="win-prob-bar-progress" style="width: ${homeProb}%">${homeProb}%</div>
-                            </div>
-                        </div>
-                        <div class="win-prob-bar">
-                            <div class="win-prob-bar-label">
-                                <span>${awayTeam}</span>
-                                <span>${awayProb}%</span>
-                            </div>
-                            <div class="win-prob-bar-fill">
-                                <div class="win-prob-bar-progress" style="width: ${awayProb}%">${awayProb}%</div>
-                            </div>
-                        </div>
+                        ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, false)}
                     </div>
 
                     <div id="playbyplay-feed" class="playbyplay-feed">
@@ -509,24 +504,7 @@
 
                 <div class="win-prob">
                     <div class="win-prob-title">Win Probability</div>
-                    <div class="win-prob-bar">
-                        <div class="win-prob-bar-label">
-                            <span>${homeTeam}</span>
-                            <span>${homeProb}%</span>
-                        </div>
-                        <div class="win-prob-bar-fill">
-                            <div class="win-prob-bar-progress" style="width: ${homeProb}%">${homeProb}%</div>
-                        </div>
-                    </div>
-                    <div class="win-prob-bar">
-                        <div class="win-prob-bar-label">
-                            <span>${awayTeam}</span>
-                            <span>${awayProb}%</span>
-                        </div>
-                        <div class="win-prob-bar-fill">
-                            <div class="win-prob-bar-progress" style="width: ${awayProb}%">${awayProb}%</div>
-                        </div>
-                    </div>
+                    ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive)}
                 </div>
 
                 <div id="playbyplay-feed" class="playbyplay-feed">
@@ -547,6 +525,106 @@
             status.style.display = 'block';
         }
 
+        function generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive) {
+            if (!historyData || historyData.length === 0) {
+                // Fallback to bar display if no history
+                return `
+                    <div class="win-prob-current">
+                        <div class="win-prob-team">
+                            <span>${homeTeam}</span>
+                            <span class="win-prob-percentage">${homeProb}%</span>
+                        </div>
+                        <div class="win-prob-team">
+                            <span>${awayTeam}</span>
+                            <span class="win-prob-percentage">${awayProb}%</span>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Determine graph dimensions
+            const width = 600;
+            const height = 200;
+            const padding = { top: 20, right: 20, bottom: 30, left: 40 };
+            const chartWidth = width - padding.left - padding.right;
+            const chartHeight = height - padding.top - padding.bottom;
+            
+            // Calculate time range
+            const times = historyData.map(d => d.ts);
+            const minTime = Math.min(...times);
+            const maxTime = Math.max(...times);
+            const timeRange = maxTime - minTime || 1;
+            
+            // Map data points to SVG coordinates
+            const points = historyData.map((d, i) => {
+                const x = padding.left + (d.ts - minTime) / timeRange * chartWidth;
+                const y = padding.top + chartHeight - (d.p_home_win * chartHeight);
+                return { x, y };
+            });
+            
+            // Build SVG path
+            let path = '';
+            if (points.length > 0) {
+                path = `M ${points[0].x} ${points[0].y}`;
+                for (let i = 1; i < points.length; i++) {
+                    path += ` L ${points[i].x} ${points[i].y}`;
+                }
+            }
+            
+            // Create area under curve for inverse team
+            let areaPath = '';
+            if (points.length > 0) {
+                areaPath = `M ${points[0].x} ${height - padding.bottom}`;
+                for (let i = 0; i < points.length; i++) {
+                    areaPath += ` L ${points[i].x} ${points[i].y}`;
+                }
+                areaPath += ` L ${points[points.length - 1].x} ${height - padding.bottom} Z`;
+            }
+            
+            // Determine period markers
+            const periods = [];
+            const totalTime = maxTime - minTime;
+            if (totalTime < 4000) {  // Typical NHL game is ~3600 seconds
+                // Mark periods at 1/3, 2/3, and end (roughly)
+                periods.push({ x: padding.left + chartWidth / 3, label: '1st' });
+                periods.push({ x: padding.left + chartWidth * 2 / 3, label: '2nd' });
+                periods.push({ x: padding.left + chartWidth, label: '3rd' });
+            }
+            
+            return `
+                <div class="win-prob-graph-container">
+                    <div class="win-prob-graph-labels">
+                        <div class="win-prob-graph-team-left">
+                            <span>${homeTeam}</span>
+                            <span class="win-prob-graph-percentage">${homeProb}%</span>
+                        </div>
+                        <div class="win-prob-graph-team-right">
+                            <span class="win-prob-graph-percentage">${awayProb}%</span>
+                            <span>${awayTeam}</span>
+                        </div>
+                    </div>
+                    <svg class="win-prob-graph" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+                        <!-- Grid lines -->
+                        <line x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${height - padding.bottom}" stroke="#333" stroke-width="1"/>
+                        <line x1="${padding.left}" y1="${height - padding.bottom}" x2="${width - padding.right}" y2="${height - padding.bottom}" stroke="#333" stroke-width="1"/>
+                        <line x1="${padding.left}" y1="${padding.top + chartHeight / 2}" x2="${width - padding.right}" y2="${padding.top + chartHeight / 2}" stroke="#333" stroke-width="1" stroke-dasharray="2,2"/>
+                        
+                        <!-- Area under curve for away team probability -->
+                        <path d="${areaPath}" fill="#2a2a2a" opacity="0.3"/>
+                        
+                        <!-- Line for home team probability -->
+                        <path d="${path}" fill="none" stroke="#ff4d6d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        
+                        <!-- Period markers -->
+                        ${periods.map(p => `
+                            <line x1="${p.x}" y1="${padding.top}" x2="${p.x}" y2="${height - padding.bottom}" stroke="#333" stroke-width="0.5" stroke-dasharray="2,2"/>
+                            <text x="${p.x}" y="${height - 10}" text-anchor="middle" font-size="10" fill="#888">${p.label}</text>
+                        `).join('')}
+                    </svg>
+                </div>
+            `;
+        }
+        
         function switchTab(tabName, gameId) {
             document.querySelectorAll('.tab').forEach(tab => {
                 tab.classList.remove('active');

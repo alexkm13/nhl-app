@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 
 import httpx
+import psycopg
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +18,7 @@ from pydantic import BaseModel
 from redis.asyncio import Redis
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 app = FastAPI(title="GameCast++ Gateway")
 
 # Add CORS middleware
@@ -753,6 +755,32 @@ async def get_winprob(game_id: str):
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="No prediction yet for this game")
+
+@app.get("/v1/games/{game_id}/winprob/history")
+async def get_winprob_history(game_id: str):
+    """Get historical win probability data for graphing"""
+    try:
+        if not DATABASE_URL:
+            return {"game_id": game_id, "data": []}
+        
+        async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT ts, p_home_win 
+                    FROM predictions 
+                    WHERE game_id = %s 
+                    ORDER BY ts ASC
+                    """,
+                    (game_id,)
+                )
+                rows = await cur.fetchall()
+                
+                data = [{"ts": float(ts.timestamp()), "p_home_win": float(p_home_win)} for ts, p_home_win in rows]
+                return {"game_id": game_id, "data": data}
+    except Exception as e:
+        print(f"[gateway] Error fetching win probability history: {e}")
+        return {"game_id": game_id, "data": []}
 
 @app.get("/v1/games/{game_id}/winprob/friendly")
 async def get_winprob_friendly(game_id: str):
