@@ -3,6 +3,7 @@ import json
 import os
 import random
 import time
+from datetime import datetime
 
 import psycopg
 from nhlpy import NHLClient
@@ -170,23 +171,61 @@ async def produce_nhl_game(r: Redis, nhl_client: NHLClient, game_id: str):
             # Fallback to defending side if eventOwnerTeamId not available
             team = "HOME" if details.get("homeTeamDefendingSide") else "AWAY"
         
-        # Get situation/strength
-        situation = play.get("situationCode", "1551")  # e.g., "1551" = 5v5
-        strength = "EV"
-        if situation[0] != situation[2]:  # Different numbers = power play
-            if int(situation[0]) > int(situation[2]):
-                strength = "PP"
-            else:
-                strength = "PK"
+        # Get situation/strength from NHL API situationCode
+        # Format: ABCD where B=away_skaters, D=home_skaters
+        # E.g., "1551" = 5v5 even strength, "1451" = 4v5
+        situation = play.get("situationCode", "1551")
+        away_skaters = int(situation[1]) if len(situation) >= 2 else 5
+        home_skaters = int(situation[3]) if len(situation) >= 4 else 5
         
-        # Get timestamp
+        # Determine strength from the event-owning team's perspective
+        if team == "HOME":
+            # For home team: check home skaters vs away skaters
+            if home_skaters == 5 and away_skaters == 5:
+                strength = "EV"
+            elif home_skaters > away_skaters:
+                strength = "PP"  # Home has more skaters = home power play
+            elif home_skaters < away_skaters:
+                strength = "PK"  # Home has fewer skaters = home penalty kill
+            else:
+                strength = "EV"
+        else:  # team == "AWAY"
+            # For away team: check away skaters vs home skaters
+            if away_skaters == 5 and home_skaters == 5:
+                strength = "EV"
+            elif away_skaters > home_skaters:
+                strength = "PP"  # Away has more skaters = away power play
+            elif away_skaters < home_skaters:
+                strength = "PK"  # Away has fewer skaters = away penalty kill
+            else:
+                strength = "EV"
+        
+        # Get timestamp from game start and period time
         time_in_period = play.get("timeInPeriod", "00:00")
         period = play.get("periodDescriptor", {}).get("number", 1)
         
-        # Convert time to seconds from start
-        minutes, seconds = map(int, time_in_period.split(":"))
-        total_seconds = (period - 1) * 1200 + (20 - minutes) * 60 + (60 - seconds)
-        timestamp = time.time() - total_seconds  # Approximate timestamp
+        # Parse game start time from NHL API
+        game_start_str = game_data.get("startTimeUTC", "")
+        
+        if game_start_str:
+            try:
+                # Parse game start time (format: "YYYY-MM-DDTHH:MM:SSZ")
+                game_start = datetime.fromisoformat(game_start_str.replace('Z', '+00:00'))
+                game_start_ts = game_start.timestamp()
+                
+                # Calculate elapsed time in period: time_in_period is MM:SS format
+                minutes, seconds = map(int, time_in_period.split(":"))
+                elapsed_seconds = (20 - minutes) * 60 - seconds  # Time elapsed from period start
+                
+                # Total seconds from game start
+                period_offset = (period - 1) * 1200  # 20 minutes per period
+                total_elapsed = period_offset + elapsed_seconds
+                timestamp = game_start_ts + total_elapsed
+            except Exception:
+                # Fallback to approximate timestamp
+                timestamp = time.time()
+        else:
+            timestamp = time.time()
         
         # Get coordinates if available
         x = details.get("xCoordInFeet", random.uniform(-100, 100))
