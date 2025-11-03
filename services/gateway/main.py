@@ -67,10 +67,16 @@ async def fetch_nhl_daily_schedule(date: str = None) -> dict:
                     for week in data.get("gameWeek", []):
                         if week.get("date") == date:
                             return week
+                    # If no exact match, return first day's games
+                    if data.get("gameWeek"):
+                        return data["gameWeek"][0]
                 return data
+            print(f"[gateway] NHL API schedule error {response.status_code} for {date}")
             return {"games": [], "date": date}
     except Exception as e:
         print(f"[gateway] Error fetching NHL schedule for {date}: {e}")
+        import traceback
+        traceback.print_exc()
         return {"games": [], "date": date}
 
 async def get_player_name(player_id: int, redis: Redis = None) -> str:
@@ -417,21 +423,43 @@ async def list_games():
         schedule = await fetch_nhl_daily_schedule()
         
         games = []
-        if isinstance(schedule, dict) and "games" in schedule:
-            schedule = schedule["games"]
-        elif isinstance(schedule, dict) and "gameWeek" in schedule:
-            schedule = schedule["gameWeek"][0].get("games", []) if schedule["gameWeek"] else []
+        games_list = schedule.get("games", []) if isinstance(schedule, dict) else []
         
-        for game in schedule:
+        for game in games_list:
             if isinstance(game, dict):
+                # Get team names
+                away_team = game.get("awayTeam", {})
+                home_team = game.get("homeTeam", {})
+                
+                # Format game time
+                start_time = game.get("startTimeUTC", "")
+                game_time = ""
+                if start_time:
+                    try:
+                        dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                        # Convert to local time and format
+                        game_time = dt.strftime("%I:%M %p")
+                    except:
+                        game_time = start_time
+                
                 games.append({
                     "game_id": str(game.get("id", "")),
-                    "away_team": game.get("awayTeam", {}).get("abbrev", ""),
-                    "home_team": game.get("homeTeam", {}).get("abbrev", ""),
+                    "away_team": away_team.get("abbrev", ""),
+                    "away_team_name": away_team.get("commonName", {}).get("default", ""),
+                    "away_team_logo": away_team.get("logo", ""),
+                    "home_team": home_team.get("abbrev", ""),
+                    "home_team_name": home_team.get("commonName", {}).get("default", ""),
+                    "home_team_logo": home_team.get("logo", ""),
                     "venue": game.get("venue", {}).get("default", ""),
-                    "game_time": game.get("startTimeUTC", ""),
+                    "game_time": game_time,
+                    "start_time_utc": start_time,
                     "game_state": game.get("gameState", ""),
+                    "away_score": game.get("awayScore", 0) if "awayScore" in game else away_team.get("score", 0),
+                    "home_score": game.get("homeScore", 0) if "homeScore" in game else home_team.get("score", 0),
                 })
+        
+        # Sort games by start time
+        games.sort(key=lambda x: x.get("start_time_utc", ""))
         
         return {
             "date": schedule.get("date", "") if isinstance(schedule, dict) else "",
