@@ -89,8 +89,17 @@ async def get_winprob_friendly(game_id: str):
         last_event = state.get("last_event", "Unknown")
         
         # Get team names for this game
-        home_team = "Colorado Avalanche"
-        away_team = "Minnesota Wild"
+        # Game ID 2024020589 = Boston Bruins @ Washington Capitals (Nov 2, 2024)
+        if game_id == "2024020589":
+            home_team = "Washington Capitals"
+            away_team = "Boston Bruins"
+        elif game_id == "TEST_GAME":
+            home_team = "Home Team"
+            away_team = "Away Team"
+        else:
+            # Default fallback - could be enhanced with game ID lookup
+            home_team = "Home Team"
+            away_team = "Away Team"
         
         # Format strength
         strength_names = {
