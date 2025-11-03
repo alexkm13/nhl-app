@@ -66,6 +66,79 @@ async def get_winprob(game_id: str):
     except KeyError:
         raise HTTPException(status_code=404, detail="No prediction yet for this game")
 
+@app.get("/v1/games/{game_id}/winprob/friendly")
+async def get_winprob_friendly(game_id: str):
+    """Human-readable win probability with percentages and game score"""
+    r = app.state.redis
+    key = f"pred:{game_id}"
+    data = await r.hgetall(key)
+    if not data:
+        raise HTTPException(status_code=404, detail="No prediction yet for this game")
+    
+    try:
+        p_home = float(data["p_home_win"])
+        p_away = 1.0 - p_home
+        
+        # Get current score
+        state_key = f"state:{game_id}"
+        state = await r.hgetall(state_key)
+        
+        home_score = int(state.get("home_score", 0))
+        away_score = int(state.get("away_score", 0))
+        strength = state.get("strength", "EV")
+        last_event = state.get("last_event", "Unknown")
+        
+        # Get team names for this game
+        home_team = "Colorado Avalanche"
+        away_team = "Minnesota Wild"
+        
+        # Format strength
+        strength_names = {
+            "EV": "Even Strength (5v5)",
+            "PP": "Power Play",
+            "PK": "Shorthanded"
+        }
+        
+        # Determine favorite
+        if p_home > 0.55:
+            favorite = f"{home_team} (favored)"
+        elif p_away > 0.55:
+            favorite = f"{away_team} (favored)"
+        else:
+            favorite = "Close game"
+        
+        return {
+            "game": {
+                "id": game_id,
+                "matchup": f"{away_team} @ {home_team}",
+                "favorite": favorite
+            },
+            "score": {
+                "home": {
+                    "team": home_team,
+                    "goals": home_score
+                },
+                "away": {
+                    "team": away_team,
+                    "goals": away_score
+                },
+                "display": f"{home_team} {home_score} - {away_score} {away_team}"
+            },
+            "current_situation": {
+                "strength": strength_names.get(strength, strength),
+                "last_event": last_event
+            },
+            "win_probability": {
+                home_team: round(p_home * 100, 1),
+                away_team: round(p_away * 100, 1),
+                "summary": f"{home_team}: {round(p_home * 100, 1)}% | {away_team}: {round(p_away * 100, 1)}%"
+            },
+            "confidence": "High" if max(p_home, p_away) > 0.7 else "Medium" if max(p_home, p_away) > 0.6 else "Low",
+            "updated_at": float(data["ts"])
+        }
+    except Exception:
+        raise HTTPException(status_code=404, detail="No prediction yet for this game")
+
 @app.websocket("/v1/stream/{game_id}")
 async def stream_game(ws: WebSocket, game_id: str):
     await ws.accept()
