@@ -1,5 +1,9 @@
+import asyncio
 import json
 import os
+import random
+import subprocess
+from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from nhlpy import NHLClient
@@ -44,6 +48,132 @@ async def metrics():
         200,
         {"Content-Type": CONTENT_TYPE_LATEST},
     )
+
+async def run_ingestion(game_id: str, redis: Redis):
+    """Run NHL game ingestion in background"""
+    try:
+        nhl_client = NHLClient()
+        
+        # Clear old data for this game
+        await redis.delete(f"events:{game_id}")
+        
+        # Fetch and process game data
+        game_data = nhl_client.game_center.play_by_play(game_id)
+        if not game_data:
+            await redis.hset(f"ingestion_status:{game_id}", "status", "failed")
+            await redis.hset(f"ingestion_status:{game_id}", "error", "No game data found")
+            return
+        
+        plays = game_data.get("plays", [])
+        if not plays:
+            await redis.hset(f"ingestion_status:{game_id}", "status", "failed")
+            await redis.hset(f"ingestion_status:{game_id}", "error", "No plays found")
+            return
+        
+        # Get team IDs
+        home_team_id = game_data.get("homeTeam", {}).get("id")
+        away_team_id = game_data.get("awayTeam", {}).get("id")
+        
+        # Get game start time
+        game_start_str = game_data.get("startTimeUTC", "")
+        game_start_ts = None
+        if game_start_str:
+            game_start = datetime.fromisoformat(game_start_str.replace('Z', '+00:00'))
+            game_start_ts = game_start.timestamp()
+        
+        # Process events and publish to Redis
+        for play in plays:
+            # Skip non-relevant events
+            type_code = str(play.get("typeCode", ""))
+            if type_code in ["520", "516", "517"]:  # period-start, stoppage, period-end
+                continue
+            
+            # Map event types
+            type_mapping = {
+                "502": "FACEOFF", "503": "HIT", "504": "HIT",
+                "505": "GOAL", "506": "SHOT", "507": "SHOT",
+                "508": "BLOCK", "509": "PENALTY",
+            }
+            mapped_type = type_mapping.get(type_code, "SHOT")
+            
+            # Get team
+            details = play.get("details", {})
+            event_owner_id = details.get("eventOwnerTeamId")
+            if event_owner_id == home_team_id:
+                team = "HOME"
+            elif event_owner_id == away_team_id:
+                team = "AWAY"
+            else:
+                team = "HOME" if play.get("homeTeamDefendingSide") == "right" else "AWAY"
+            
+            # Get strength
+            situation = play.get("situationCode", "1551")
+            away_skaters = int(situation[1]) if len(situation) >= 2 else 5
+            home_skaters = int(situation[3]) if len(situation) >= 4 else 5
+            
+            if team == "HOME":
+                if home_skaters == 5 and away_skaters == 5:
+                    strength = "EV"
+                elif home_skaters > away_skaters:
+                    strength = "PP"
+                elif home_skaters < away_skaters:
+                    strength = "PK"
+                else:
+                    strength = "EV"
+            else:
+                if away_skaters == 5 and home_skaters == 5:
+                    strength = "EV"
+                elif away_skaters > home_skaters:
+                    strength = "PP"
+                elif away_skaters < home_skaters:
+                    strength = "PK"
+                else:
+                    strength = "EV"
+            
+            # Get timestamp
+            time_in_period = play.get("timeInPeriod", "00:00")
+            period = play.get("periodDescriptor", {}).get("number", 1)
+            
+            if game_start_ts:
+                try:
+                    minutes, seconds = map(int, time_in_period.split(":"))
+                    elapsed_seconds = minutes * 60 + seconds
+                    period_offset = (period - 1) * 1200
+                    timestamp = game_start_ts + period_offset + elapsed_seconds
+                except:
+                    import time
+                    timestamp = time.time()
+            else:
+                import time
+                timestamp = time.time()
+            
+            # Get coordinates
+            import random
+            x = details.get("xCoordInFeet", random.uniform(-100, 100))
+            y = details.get("yCoordInFeet", random.uniform(-42.5, 42.5))
+            
+            # Create event
+            event = {
+                "game_id": game_id,
+                "ts": timestamp,
+                "team": team,
+                "event_type": mapped_type,
+                "strength": strength,
+                "x": x,
+                "y": y,
+                "shot_quality": random.random(),
+            }
+            
+            # Publish to Redis
+            await redis.xadd("events", {"json": json.dumps(event)})
+        
+        # Mark as complete
+        await redis.hset(f"ingestion_status:{game_id}", "status", "completed")
+        
+    except Exception as e:
+        await redis.hset(f"ingestion_status:{game_id}", "status", "failed")
+        await redis.hset(f"ingestion_status:{game_id}", "error", str(e))
+        print(f"Error in background ingestion: {e}")
 
 @app.on_event("startup")
 async def startup():
@@ -90,7 +220,7 @@ async def list_games():
 
 @app.post("/v1/games/{game_id}/start")
 async def start_game_ingestion(game_id: str):
-    """Trigger ingestion for a specific game - returns instructions"""
+    """Trigger ingestion for a specific game"""
     try:
         # Verify game exists
         game_data = nhl_client.game_center.play_by_play(game_id)
@@ -100,15 +230,35 @@ async def start_game_ingestion(game_id: str):
         home_team = game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home")
         away_team = game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away")
         
+        # Trigger ingestion by calling ingestor service
+        # We'll use a background task to run the ingestion
+        r = app.state.redis
+        
+        # Check if ingestion is already in progress
+        existing = await r.hget(f"ingestion_status:{game_id}", "status")
+        if existing and existing == "in_progress":
+            return {
+                "message": f"Ingestion already in progress for {away_team} @ {home_team}",
+                "game_id": game_id,
+                "matchup": f"{away_team} @ {home_team}",
+                "status": "in_progress"
+            }
+        
+        # Mark as in progress
+        await r.hset(f"ingestion_status:{game_id}", mapping={
+            "status": "in_progress",
+            "game_id": game_id,
+            "matchup": f"{away_team} @ {home_team}"
+        })
+        
+        # Run ingestion in background
+        asyncio.create_task(run_ingestion(game_id, r))
+        
         return {
-            "message": f"To start ingesting {away_team} @ {home_team}",
+            "message": f"Started ingestion for {away_team} @ {home_team}",
             "game_id": game_id,
             "matchup": f"{away_team} @ {home_team}",
-            "instructions": [
-                "Update docker-compose.yaml: set GAME_ID=" + game_id,
-                "Run: docker compose up -d --build ingestor",
-                "Or run: GAME_ID=" + game_id + " docker compose restart ingestor"
-            ]
+            "status": "started"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
