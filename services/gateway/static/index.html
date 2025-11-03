@@ -187,9 +187,9 @@
                                             <div class="game-live-time">${gameTimeDisplay}</div>
                                         </div>
                                         <div class="game-live-team-right">
+                                            <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-live-logo" onerror="this.style.display='none'">
                                             <div class="game-live-score-num">${homeScore}</div>
                                             <div class="game-live-team-name">${game.home_team_name || game.home_team}</div>
-                                            <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-live-logo" onerror="this.style.display='none'">
                                         </div>
                                     </div>
                                 </div>
@@ -470,9 +470,9 @@
                         <div class="live-time">${timeDisplay}</div>
                     </div>
                     <div class="live-team-right">
+                        <img src="${homeLogo}" alt="${homeTeam}" class="live-team-logo" onerror="this.style.display='none'">
                         <div class="live-team-score">${homeScore}</div>
                         <div class="live-team-name">${homeTeam}</div>
-                        <img src="${homeLogo}" alt="${homeTeam}" class="live-team-logo" onerror="this.style.display='none'">
                     </div>
                 </div>
 
