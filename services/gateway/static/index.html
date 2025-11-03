@@ -366,6 +366,9 @@
                 console.error('Error checking final score:', error);
             }
             
+            // Get overtime type from finalData if available (for accurate OT/SO display)
+            const overtimeType = finalData?.overtime_type || null;
+            
             // If game is final, show final score display
             if (isFinal && finalData) {
                 const finalHomeTeam = finalData.home_team;

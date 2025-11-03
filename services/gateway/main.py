@@ -461,6 +461,16 @@ async def list_games(date: str = None):
                 # TODO: Integrate with betting API (e.g., OddsJam, Wager API, etc.)
                 # For now, return None - will be displayed as "N/A" on frontend
                 
+                # Check if game went to overtime or shootout (for completed games)
+                game_state = game.get("gameState", "")
+                overtime_type = None
+                if game_state in ["OFF", "FINAL"]:
+                    # For completed games in the schedule, we can't easily determine OT/SO without
+                    # fetching full game data. We'll set it to None here and let the final endpoint
+                    # handle it when the game is clicked. Alternatively, we could fetch it here
+                    # but that would be expensive for the games list.
+                    pass
+                
                 games.append({
                     "game_id": str(game.get("id", "")),
                     "away_team": away_team.get("abbrev", ""),
@@ -471,12 +481,13 @@ async def list_games(date: str = None):
                     "home_team_logo": home_team.get("logo", ""),
                     "venue": game.get("venue", {}).get("default", ""),
                     "start_time_utc": start_time,  # UTC timestamp for client-side conversion
-                    "game_state": game.get("gameState", ""),
+                    "game_state": game_state,
                     "away_score": game.get("awayScore", 0) if "awayScore" in game else away_team.get("score", 0),
                     "home_score": game.get("homeScore", 0) if "homeScore" in game else home_team.get("score", 0),
                     "spread": spread_value,  # e.g., -1.5, +2.5
                     "spread_favorite": spread_favorite,  # "home" or "away"
                     "over_under": over_under,  # e.g., 6.5
+                    "overtime_type": overtime_type  # None, "OT", or "SO" - will be populated when game is clicked
                 })
         
         # Sort games by start time
