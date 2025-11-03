@@ -324,7 +324,8 @@ async def produce_nhl_game(r: Redis, nhl_client: NHLClient, game_id: str):
         sid = await r.xadd(STREAM_EVENTS, {"json": json.dumps(payload)})
         print(f"[ingestor] XADD events id={sid} {mapped_type} team={team}")
         
-        await asyncio.sleep(0.1)  # Small delay between events
+        # Minimal delay for fast ingestion (0.01s = ~100 events/sec)
+        await asyncio.sleep(0.01)
     
     print("[ingestor] NHL game events processed")
 
