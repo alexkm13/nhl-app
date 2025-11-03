@@ -82,7 +82,7 @@ async def fetch_nhl_daily_schedule(date: str = None) -> dict:
 async def get_player_name(player_id: int, redis: Redis = None) -> str:
     """Get player name from NHL API with Redis caching"""
     if not player_id:
-        return "Unknown Player"
+        return None
     
     # Check Redis cache first if available
     if redis:
@@ -95,7 +95,7 @@ async def get_player_name(player_id: int, redis: Redis = None) -> str:
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"https://api-web.nhle.com/v1/player/{player_id}/landing",
-                timeout=3.0  # Reduced timeout
+                timeout=5.0  # Increased timeout
             )
             if response.status_code == 200:
                 data = response.json()
@@ -108,11 +108,17 @@ async def get_player_name(player_id: int, redis: Redis = None) -> str:
                     if redis:
                         await redis.setex(f"player_name:{player_id}", 86400, name)  # Cache for 24 hours
                     return name
+            elif response.status_code == 404:
+                print(f"[gateway] Player {player_id} not found in NHL API")
+            else:
+                print(f"[gateway] NHL API error {response.status_code} for player {player_id}")
+    except httpx.TimeoutException:
+        print(f"[gateway] Timeout fetching player {player_id}")
     except Exception as e:
         print(f"[gateway] Error fetching player {player_id}: {e}")
     
-    # Fallback
-    return f"Player {player_id}"
+    # Fallback - return None so caller can handle it
+    return None
 
 async def get_player_names_batch(player_ids: list, redis: Redis = None) -> dict:
     """Batch fetch player names in parallel"""
@@ -158,9 +164,16 @@ async def get_player_names_batch(player_ids: list, redis: Redis = None) -> dict:
                         if redis:
                             await redis.setex(f"player_name:{pid}", 86400, name)
                         return pid, name
+            elif response.status_code == 404:
+                print(f"[gateway] Player {pid} not found in NHL API")
+            else:
+                print(f"[gateway] NHL API error {response.status_code} for player {pid}")
+        except httpx.TimeoutException:
+            print(f"[gateway] Timeout fetching player {pid}")
         except Exception as e:
             print(f"[gateway] Error fetching player {pid}: {e}")
-        return pid, f"Player {pid}"
+        # Return None if not found - caller will handle fallback
+        return pid, None
     
     # Fetch all missing players in parallel
     tasks = [fetch_player(pid) for pid in missing_ids]
@@ -168,9 +181,13 @@ async def get_player_names_batch(player_ids: list, redis: Redis = None) -> dict:
     
     # Combine results
     for result in results:
+        if isinstance(result, Exception):
+            print(f"[gateway] Exception in batch player fetch: {result}")
+            continue
         if isinstance(result, tuple):
             pid, name = result
-            cached_names[pid] = name
+            if name:  # Only add if name was successfully fetched
+                cached_names[pid] = name
     
     return cached_names
 
@@ -842,12 +859,24 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 player_id = details.get("scoringPlayerId")
                 assist1_player_id = details.get("assist1PlayerId")
                 assist2_player_id = details.get("assist2PlayerId")
+                # Get player names from batch lookup
                 player_name = player_names.get(player_id) if player_id else None
                 assist1_name = player_names.get(assist1_player_id) if assist1_player_id else None
                 assist2_name = player_names.get(assist2_player_id) if assist2_player_id else None
+                
+                # If batch lookup returned None, try individual fetch
+                if player_id and not player_name:
+                    player_name = await get_player_name(player_id, r)
+                if assist1_player_id and not assist1_name:
+                    assist1_name = await get_player_name(assist1_player_id, r)
+                if assist2_player_id and not assist2_name:
+                    assist2_name = await get_player_name(assist2_player_id, r)
+                    
             elif mapped_type == "PENALTY":
                 player_id = details.get("committedByPlayerId")
                 player_name = player_names.get(player_id) if player_id else None
+                if player_id and not player_name:
+                    player_name = await get_player_name(player_id, r)
             else:
                 player_name = None
             
@@ -1040,7 +1069,10 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 event_data["duration"] = details.get("duration", 0)
                 drawn_by_id = details.get("drawnByPlayerId")
                 if drawn_by_id:
-                    event_data["drawn_by"] = player_names.get(drawn_by_id)
+                    drawn_by_name = player_names.get(drawn_by_id)
+                    if not drawn_by_name:
+                        drawn_by_name = await get_player_name(drawn_by_id, r)
+                    event_data["drawn_by"] = drawn_by_name
                     event_data["drawn_by_id"] = drawn_by_id
             
             events.append(event_data)
