@@ -336,6 +336,38 @@
             }
         }
 
+        function showGameDetails() {
+            // Hide games list
+            const mainContainer = document.querySelector('.main-container');
+            if (mainContainer) {
+                mainContainer.style.display = 'none';
+            }
+            
+            // Show game details
+            const gameDetails = document.getElementById('gameDetails');
+            if (gameDetails) {
+                gameDetails.style.display = 'block';
+            }
+        }
+        
+        function showGamesList() {
+            // Show games list
+            const mainContainer = document.querySelector('.main-container');
+            if (mainContainer) {
+                mainContainer.style.display = 'block';
+            }
+            
+            // Hide game details
+            const gameDetails = document.getElementById('gameDetails');
+            if (gameDetails) {
+                gameDetails.style.display = 'none';
+                gameDetails.classList.remove('show');
+            }
+            
+            // Scroll to top
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
         async function displayResults(data) {
             const gameDetails = document.getElementById('gameDetails');
             const game = data.game;
@@ -352,6 +384,9 @@
             const awayProb = winProb[awayTeam];
 
             const gameId = data.game.id;
+            
+            // Hide games list and show game details
+            showGameDetails();
             
             // Fetch historical win probability data for graphing
             let historyData = [];
@@ -433,6 +468,9 @@
                 }
                 
                 gameDetails.innerHTML = `
+                    <div class="back-button-container">
+                        <button class="back-button" onclick="showGamesList()">← Back to Games</button>
+                    </div>
                     <div class="final-score-container">
                         <div class="final-score-header">
                             <span class="final-status">${finalStatusText}</span>
@@ -484,6 +522,9 @@
             }
             
             gameDetails.innerHTML = `
+                <div class="back-button-container">
+                    <button class="back-button" onclick="showGamesList()">← Back to Games</button>
+                </div>
                 <div class="live-score-container">
                     <div class="live-team-left">
                         <img src="${awayLogo}" alt="${awayTeam}" class="live-team-logo" onerror="this.style.display='none'">
