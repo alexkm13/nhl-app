@@ -7,6 +7,7 @@ from datetime import datetime
 
 import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from nhlpy import NHLClient
@@ -16,6 +17,15 @@ from redis.asyncio import Redis
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 app = FastAPI(title="GameCast++ Gateway")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Serve static files
 static_dir = os.path.join(os.path.dirname(__file__), "static")

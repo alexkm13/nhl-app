@@ -457,10 +457,25 @@
     </div>
 
     <script>
-        const API_BASE = window.location.origin;
+        const API_BASE = window.location.origin || 'http://localhost:8000';
+        
+        // Verify API is accessible
+        async function checkAPIHealth() {
+            try {
+                const response = await fetch(`${API_BASE}/docs`, { method: 'HEAD' });
+                return response.ok;
+            } catch (error) {
+                console.warn('API health check failed:', error);
+                return false;
+            }
+        }
 
         // Load games list on page load
         window.addEventListener('DOMContentLoaded', async function() {
+            const isHealthy = await checkAPIHealth();
+            if (!isHealthy) {
+                console.warn('API may not be accessible. Some features may not work.');
+            }
             await loadGamesList();
         });
 
@@ -548,7 +563,18 @@
             // Check status first
             try {
                 const statusResponse = await fetch(`${API_BASE}/v1/games/${gameId}/status`);
-                const statusData = await statusResponse.json();
+                
+                if (!statusResponse.ok) {
+                    throw new Error(`HTTP ${statusResponse.status}: ${statusResponse.statusText}`);
+                }
+                
+                let statusData;
+                try {
+                    statusData = await statusResponse.json();
+                } catch (jsonError) {
+                    const text = await statusResponse.text();
+                    throw new Error(`Invalid JSON response: ${text.substring(0, 100)}`);
+                }
 
                 if (statusData.has_prediction) {
                     // Prediction is ready, fetch it
@@ -574,7 +600,9 @@
                 showStatus('⏳ Processing... Please wait', 'info');
                 setTimeout(() => pollForResults(gameId), 5000);
             } catch (error) {
-                showStatus(`❌ Error checking status: ${error.message}`, 'error');
+                console.error('Status check error:', error);
+                const errorMsg = error.message || 'Network error';
+                showStatus(`❌ Error checking status: ${errorMsg}`, 'error');
                 loading.style.display = 'none';
                 document.getElementById('startBtn').disabled = false;
             }
