@@ -8,7 +8,7 @@
 </head>
 <body>
     <div class="header">
-        <h1>NHL</h1>
+        <h1>NHL Scorecast</h1>
     </div>
 
     <div class="date-selector" id="dateSelector">
@@ -399,17 +399,21 @@
                         const playerInitials = event.player ? event.player.split(' ').map(n => n[0]).join('').substring(0, 2) : '?';
                         const strengthClass = event.strength || 'EV';
                         
+                        // Format period and time
+                        const period = event.period || 1;
+                        const timeInPeriod = event.time_in_period || '00:00';
+                        const periodTime = `P${period} ${timeInPeriod}`;
+                        
                         return `
                             <div class="playbyplay-event">
                                 <div class="event-player-avatar">${playerInitials}</div>
                                 <div class="event-content">
                                     <div class="event-header">
                                         <span>${event.home_score} - ${event.away_score}</span>
-                                        <span>${timeStr}</span>
+                                        <span>${periodTime}</span>
                                     </div>
                                     <div class="event-description">
                                         ${event.description}
-                                        <span class="event-strength ${strengthClass}">${event.strength}</span>
                                     </div>
                                     <div class="event-player">
                                         ${event.player || 'Unknown Player'}

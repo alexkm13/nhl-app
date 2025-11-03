@@ -916,12 +916,20 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 scoring_player_total = details.get("scoringPlayerTotal", 0)
                 
                 # Determine game situation (game-tying, go-ahead, etc.)
+                # Check what the score will be AFTER this goal
+                future_home_score = home_score + 1 if team == "HOME" else home_score
+                future_away_score = away_score + 1 if team == "AWAY" else away_score
+                
                 game_situation = ""
-                if home_score == away_score:
+                # Game-tying: score becomes tied after this goal
+                if future_home_score == future_away_score and home_score != away_score:
                     game_situation = "game-tying "
-                elif (team == "HOME" and home_score > away_score) or (team == "AWAY" and away_score > home_score):
+                # Go-ahead: team takes the lead with this goal
+                elif (team == "HOME" and future_home_score > away_score and home_score <= away_score) or \
+                     (team == "AWAY" and future_away_score > home_score and away_score <= home_score):
                     game_situation = "go-ahead "
-                elif (team == "HOME" and home_score < away_score) or (team == "AWAY" and away_score < home_score):
+                # Insurance: team already winning and extends lead
+                elif (team == "HOME" and home_score > away_score) or (team == "AWAY" and away_score > home_score):
                     game_situation = "insurance "
                 
                 # Format shot type
@@ -938,7 +946,11 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 shot_desc = shot_type_map.get(shot_type, shot_type + " shot" if shot_type else "shot")
                 
                 # Build goal description
-                event_desc = f"{scoring_player_total}' {game_situation}{shot_desc} goal"
+                # Format: "10' game-tying tip-in goal" or "2nd goal snap shot goal"
+                if scoring_player_total > 0:
+                    event_desc = f"{scoring_player_total}' {game_situation}{shot_desc} goal"
+                else:
+                    event_desc = f"{game_situation}{shot_desc} goal"
                 
                 # Add assists if available
                 assists = []
