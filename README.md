@@ -1,10 +1,10 @@
-# GameCast++ 🏒
+# GameCast++ 
 
 > Real-time NHL win probability prediction system with microservices architecture
 
 GameCast++ is a production-ready streaming system that processes live NHL game events through a microservices pipeline, computing win probabilities in real-time using machine learning models.
 
-## 🎯 Features
+## Features
 
 - **Real-time streaming** using Redis Streams for high-throughput event processing
 - **Microservices architecture** with horizontal scaling support
@@ -13,7 +13,7 @@ GameCast++ is a production-ready streaming system that processes live NHL game e
 - **Time-series storage** with TimescaleDB for historical analysis
 - **Event-driven design** with back-pressure handling and consumer groups
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌──────────┐     ┌──────────────┐     ┌───────────┐     ┌─────────┐
@@ -42,7 +42,7 @@ GameCast++ is a production-ready streaming system that processes live NHL game e
 | **Prometheus** | Metrics collection | Time-series DB |
 | **Grafana** | Dashboards & visualization | Analytics platform |
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -117,7 +117,7 @@ ws.onmessage = (event) => {
 - **ReDoc:** http://localhost:8000/redoc
 - See [docs/API.md](docs/API.md) for detailed API specs
 
-## 🧪 Testing & Development
+## Testing & Development
 
 ```bash
 # Run services
@@ -140,7 +140,7 @@ pip install -r requirements.txt
 python -m services.gateway.main  # Run gateway locally
 ```
 
-## 📊 Monitoring
+## Monitoring
 
 ### Prometheus Metrics
 
@@ -161,7 +161,7 @@ Pre-configured dashboards show:
 
 Access at: http://localhost:3000 (login: `admin/admin`)
 
-## 🗂️ Project Structure
+## Project Structure
 
 ```
 nhl-app/
@@ -184,7 +184,7 @@ nhl-app/
 └── requirements.txt     # Python dependencies
 ```
 
-## 🔄 Data Flow
+## Data Flow
 
 1. **Ingestor** generates synthetic NHL game events (goals, shots, penalties)
 2. **Feature State** processes events, maintains score/strength state
@@ -224,14 +224,14 @@ The system is designed to swap Redis Streams for Kafka without changing service 
 - Database connection pooling
 - Rate limiting per client
 
-## 📚 Documentation
+## Documentation
 
 - [Architecture Design](docs/DESIGN.md) - System design & patterns
 - [API Reference](docs/API.md) - Endpoint specifications
 - [Runbook](docs/RUNBOOK.md) - Operations & troubleshooting
 - [Benchmarks](docs/BENCHMARK.md) - Performance profiles
 
-## 🛠️ Technology Stack
+## Technology Stack
 
 - **Language:** Python 3.11+
 - **Streaming:** Redis Streams (can swap to Kafka)
@@ -250,14 +250,7 @@ The system is designed to swap Redis Streams for Kafka without changing service 
 - [ ] Multi-tenant isolation
 - [ ] CI/CD with automated testing
 
-## 🤝 Contributing
-
-This is a demonstration project showcasing microservices patterns and event-driven architecture.
-
 ## 📄 License
 
 MIT License - See LICENSE file for details
 
----
-
-**Built with ❄️ for NHL analytics**
