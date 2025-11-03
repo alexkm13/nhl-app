@@ -55,7 +55,8 @@ async def run_model():
                     home = int(features["home_score"])
                     away = int(features["away_score"])
                     ts = float(features["ts"])
-                    seconds_elapsed = ts - start
+                    # ts is already relative time from game start (computed in feature_state)
+                    seconds_elapsed = ts
 
                     p_home = model.predict(home, away, seconds_elapsed)
                     out = {

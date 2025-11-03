@@ -29,6 +29,7 @@ async def process_events():
     r = Redis.from_url(REDIS_URL, decode_responses=True)
     await create_group_if_needed(r, STREAM_EVENTS, GROUP)
     states: Dict[str, GameState] = {}
+    game_starts: Dict[str, float] = {}  # Track first event time per game
 
     while True:
         resp = await r.xreadgroup(GROUP, CONSUMER, streams={STREAM_EVENTS: ">"}, count=10, block=1000)
@@ -45,8 +46,12 @@ async def process_events():
                     ts = payload["ts"]
                     strength = payload.get("strength", "EV")
 
+                    # Track first event time for this game
+                    if game_id not in game_starts:
+                        game_starts[game_id] = ts
+                    
                     state = states.get(game_id) or GameState(game_id=game_id, ts=ts)
-                    state.ts = ts
+                    state.ts = ts - game_starts[game_id]  # Convert to relative time
                     state.strength = strength
                     state.last_event = ev
                     if ev == "GOAL":

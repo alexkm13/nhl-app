@@ -169,7 +169,7 @@ async def produce_nhl_game(r: Redis, nhl_client: NHLClient, game_id: str):
             team = "AWAY"
         else:
             # Fallback to defending side if eventOwnerTeamId not available
-            team = "HOME" if details.get("homeTeamDefendingSide") else "AWAY"
+            team = "HOME" if play.get("homeTeamDefendingSide") == "right" else "AWAY"
         
         # Get situation/strength from NHL API situationCode
         # Format: ABCD where B=away_skaters, D=home_skaters
@@ -213,9 +213,9 @@ async def produce_nhl_game(r: Redis, nhl_client: NHLClient, game_id: str):
                 game_start = datetime.fromisoformat(game_start_str.replace('Z', '+00:00'))
                 game_start_ts = game_start.timestamp()
                 
-                # Calculate elapsed time in period: time_in_period is MM:SS format
+                # Calculate elapsed time in period: timeInPeriod is MM:SS elapsed
                 minutes, seconds = map(int, time_in_period.split(":"))
-                elapsed_seconds = (20 - minutes) * 60 - seconds  # Time elapsed from period start
+                elapsed_seconds = minutes * 60 + seconds  # Time elapsed in period
                 
                 # Total seconds from game start
                 period_offset = (period - 1) * 1200  # 20 minutes per period
