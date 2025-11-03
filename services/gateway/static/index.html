@@ -445,7 +445,7 @@
 
                     <div class="win-prob">
                         <div class="win-prob-title">Win Probability</div>
-                        ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, false, finalHomeLogo, finalAwayLogo)}
+                        ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, false, finalHomeLogo, finalAwayLogo, finalData.home_abbrev || '', finalData.away_abbrev || '')}
                     </div>
 
                     <div id="playbyplay-feed" class="playbyplay-feed">
@@ -504,7 +504,7 @@
 
                 <div class="win-prob">
                     <div class="win-prob-title">Win Probability</div>
-                    ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive, homeLogo, awayLogo)}
+                    ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive, homeLogo, awayLogo, score.home.abbrev || '', score.away.abbrev || '')}
                 </div>
 
                 <div id="playbyplay-feed" class="playbyplay-feed">
@@ -525,7 +525,7 @@
             status.style.display = 'block';
         }
 
-        function generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive, homeLogo = '', awayLogo = '') {
+        function generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive, homeLogo = '', awayLogo = '', homeAbbrev = '', awayAbbrev = '') {
             // Determine graph dimensions
             const width = 600;
             const height = 200;
@@ -608,9 +608,9 @@
                 periods.push({ x: padding.left + chartWidth, label: '3rd' });
             }
             
-            // Get team abbreviations (first 3 letters)
-            const homeAbbrev = homeTeam.substring(0, 3).toUpperCase();
-            const awayAbbrev = awayTeam.substring(0, 3).toUpperCase();
+            // Use provided abbreviations, or fall back to first 3 letters if not provided
+            const homeAbbrevDisplay = homeAbbrev || homeTeam.substring(0, 3).toUpperCase();
+            const awayAbbrevDisplay = awayAbbrev || awayTeam.substring(0, 3).toUpperCase();
             
             // Get the last point for the circle
             const lastPoint = points[points.length - 1];
@@ -621,10 +621,10 @@
                         <div class="win-prob-graph-team-left">
                             ${homeLogo ? `<img src="${homeLogo}" alt="${homeTeam}" class="win-prob-graph-logo" onerror="this.style.display='none'">` : ''}
                             <span class="win-prob-graph-percentage">${homeProb.toFixed(1)}%</span>
-                            <span class="win-prob-graph-abbrev">-- ${homeAbbrev}</span>
+                            <span class="win-prob-graph-abbrev">-- ${homeAbbrevDisplay}</span>
                         </div>
                         <div class="win-prob-graph-team-right">
-                            <span class="win-prob-graph-abbrev">${awayAbbrev} --</span>
+                            <span class="win-prob-graph-abbrev">${awayAbbrevDisplay} --</span>
                             <span class="win-prob-graph-percentage">${awayProb.toFixed(1)}%</span>
                             ${awayLogo ? `<img src="${awayLogo}" alt="${awayTeam}" class="win-prob-graph-logo" onerror="this.style.display='none'">` : ''}
                         </div>

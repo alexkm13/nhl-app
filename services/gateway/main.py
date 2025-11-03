@@ -867,8 +867,10 @@ async def get_winprob_friendly(game_id: str):
         away_team = await r.get(f"game:{game_id}:away_team")
         home_logo = await r.get(f"game:{game_id}:home_logo")
         away_logo = await r.get(f"game:{game_id}:away_logo")
+        home_abbrev = await r.get(f"game:{game_id}:home_abbrev")
+        away_abbrev = await r.get(f"game:{game_id}:away_abbrev")
         
-        if not home_team or not away_team or not home_logo or not away_logo:
+        if not home_team or not away_team or not home_logo or not away_logo or not home_abbrev or not away_abbrev:
             # Cache miss - fetch from NHL API
             try:
                 game_data = await fetch_nhl_play_by_play(game_id)
@@ -879,6 +881,8 @@ async def get_winprob_friendly(game_id: str):
                     home_team = home_team_data.get("commonName", {}).get("default", "Home Team")
                     away_logo = away_team_data.get("logo", "")
                     home_logo = home_team_data.get("logo", "")
+                    away_abbrev = away_team_data.get("abbrev", "")
+                    home_abbrev = home_team_data.get("abbrev", "")
                     # Cache team names and logos for 24 hours
                     await r.setex(f"game:{game_id}:home_team", 86400, home_team)
                     await r.setex(f"game:{game_id}:away_team", 86400, away_team)
@@ -886,27 +890,43 @@ async def get_winprob_friendly(game_id: str):
                         await r.setex(f"game:{game_id}:home_logo", 86400, home_logo)
                     if away_logo:
                         await r.setex(f"game:{game_id}:away_logo", 86400, away_logo)
+                    if home_abbrev:
+                        await r.setex(f"game:{game_id}:home_abbrev", 86400, home_abbrev)
+                    if away_abbrev:
+                        await r.setex(f"game:{game_id}:away_abbrev", 86400, away_abbrev)
                 else:
                     away_team = "Away Team"
                     home_team = "Home Team"
                     away_logo = ""
                     home_logo = ""
+                    away_abbrev = ""
+                    home_abbrev = ""
             except Exception:
                 # Fallback to hardcoded for known games
                 if game_id == "2024020589":
                     home_team = "Capitals"
                     away_team = "Bruins"
+                    home_abbrev = "WSH"
+                    away_abbrev = "BOS"
                 elif game_id == "TEST_GAME":
                     home_team = "Home Team"
                     away_team = "Away Team"
+                    home_abbrev = "HOM"
+                    away_abbrev = "AWY"
                 else:
                     home_team = "Home Team"
                     away_team = "Away Team"
+                    home_abbrev = ""
+                    away_abbrev = ""
                 away_logo = ""
                 home_logo = ""
                 # Cache fallback values
                 await r.setex(f"game:{game_id}:home_team", 86400, home_team)
                 await r.setex(f"game:{game_id}:away_team", 86400, away_team)
+                if home_abbrev:
+                    await r.setex(f"game:{game_id}:home_abbrev", 86400, home_abbrev)
+                if away_abbrev:
+                    await r.setex(f"game:{game_id}:away_abbrev", 86400, away_abbrev)
         
         # Format strength with empty net and shorthanded indicators
         strength_names = {
@@ -957,11 +977,13 @@ async def get_winprob_friendly(game_id: str):
             "score": {
                 "home": {
                     "team": home_team,
+                    "abbrev": home_abbrev,
                     "goals": home_score,
                     "logo": home_logo or ""
                 },
                 "away": {
                     "team": away_team,
+                    "abbrev": away_abbrev,
                     "goals": away_score,
                     "logo": away_logo or ""
                 },
@@ -1000,6 +1022,8 @@ async def get_final_score(game_id: str):
         away_team = away_team_data.get("commonName", {}).get("default", "Away Team")
         home_logo = home_team_data.get("logo", "")
         away_logo = away_team_data.get("logo", "")
+        home_abbrev = home_team_data.get("abbrev", "")
+        away_abbrev = away_team_data.get("abbrev", "")
         home_score = home_team_data.get("score", 0)
         away_score = away_team_data.get("score", 0)
         
@@ -1036,6 +1060,8 @@ async def get_final_score(game_id: str):
             "is_final": game_state in ["OFF", "FINAL"],
             "home_team": home_team,
             "away_team": away_team,
+            "home_abbrev": home_abbrev,
+            "away_abbrev": away_abbrev,
             "home_logo": home_logo,
             "away_logo": away_logo,
             "home_score": home_score,
