@@ -25,24 +25,23 @@ if os.path.exists(static_dir):
 # Initialize NHL client
 nhl_client = NHLClient()
 
-# Player name cache
-_player_cache = {}
-
-async def get_player_name(player_id: int) -> str:
-    """Get player name from NHL API"""
+async def get_player_name(player_id: int, redis: Redis = None) -> str:
+    """Get player name from NHL API with Redis caching"""
     if not player_id:
         return "Unknown Player"
     
-    # Check cache first
-    if player_id in _player_cache:
-        return _player_cache[player_id]
+    # Check Redis cache first if available
+    if redis:
+        cached_name = await redis.get(f"player_name:{player_id}")
+        if cached_name:
+            return cached_name
     
     try:
         # Use NHL API public endpoint
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"https://api-web.nhle.com/v1/player/{player_id}/landing",
-                timeout=5.0
+                timeout=3.0  # Reduced timeout
             )
             if response.status_code == 200:
                 data = response.json()
@@ -51,13 +50,75 @@ async def get_player_name(player_id: int) -> str:
                 last_name = data.get("lastName", {}).get("default", "")
                 if first_name and last_name:
                     name = f"{first_name} {last_name}"
-                    _player_cache[player_id] = name
+                    # Cache in Redis if available
+                    if redis:
+                        await redis.setex(f"player_name:{player_id}", 86400, name)  # Cache for 24 hours
                     return name
     except Exception as e:
         print(f"[gateway] Error fetching player {player_id}: {e}")
     
     # Fallback
     return f"Player {player_id}"
+
+async def get_player_names_batch(player_ids: list, redis: Redis = None) -> dict:
+    """Batch fetch player names in parallel"""
+    if not player_ids:
+        return {}
+    
+    # Remove None and duplicates
+    unique_ids = list(set([pid for pid in player_ids if pid]))
+    if not unique_ids:
+        return {}
+    
+    # Check Redis cache first (batch read)
+    cached_names = {}
+    if redis and unique_ids:
+        # Batch read from Redis
+        keys = [f"player_name:{pid}" for pid in unique_ids]
+        values = await redis.mget(keys)
+        for pid, value in zip(unique_ids, values):
+            if value:
+                cached_names[pid] = value
+    
+    # Find missing player IDs
+    missing_ids = [pid for pid in unique_ids if pid not in cached_names]
+    
+    if not missing_ids:
+        return cached_names
+    
+    # Fetch missing players in parallel
+    async def fetch_player(pid):
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"https://api-web.nhle.com/v1/player/{pid}/landing",
+                    timeout=3.0
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    first_name = data.get("firstName", {}).get("default", "")
+                    last_name = data.get("lastName", {}).get("default", "")
+                    if first_name and last_name:
+                        name = f"{first_name} {last_name}"
+                        # Cache in Redis
+                        if redis:
+                            await redis.setex(f"player_name:{pid}", 86400, name)
+                        return pid, name
+        except Exception as e:
+            print(f"[gateway] Error fetching player {pid}: {e}")
+        return pid, f"Player {pid}"
+    
+    # Fetch all missing players in parallel
+    tasks = [fetch_player(pid) for pid in missing_ids]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Combine results
+    for result in results:
+        if isinstance(result, tuple):
+            pid, name = result
+            cached_names[pid] = name
+    
+    return cached_names
 
 @app.get("/")
 async def root():
@@ -125,9 +186,15 @@ async def run_ingestion(game_id: str, redis: Redis):
             await redis.hset(f"ingestion_status:{game_id}", "error", "No plays found")
             return
         
-        # Get team IDs
+        # Get team IDs and names
         home_team_id = game_data.get("homeTeam", {}).get("id")
         away_team_id = game_data.get("awayTeam", {}).get("id")
+        home_team_name = game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home Team")
+        away_team_name = game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away Team")
+        
+        # Cache team names for 24 hours
+        await redis.setex(f"game:{game_id}:home_team", 86400, home_team_name)
+        await redis.setex(f"game:{game_id}:away_team", 86400, away_team_name)
         
         # Get game start time
         game_start_str = game_data.get("startTimeUTC", "")
@@ -488,31 +555,42 @@ async def get_winprob_friendly(game_id: str):
         last_player_id_str = state.get("last_player_id", "")
         last_player_id = int(last_player_id_str) if last_player_id_str and last_player_id_str != "None" else None
         
-        # Look up player name
+        # Look up player name with Redis caching
         last_player_name = None
         if last_player_id:
-            last_player_name = await get_player_name(last_player_id)
+            last_player_name = await get_player_name(last_player_id, r)
         
-        # Get team names dynamically from NHL API
-        try:
-            game_data = nhl_client.game_center.play_by_play(game_id)
-            if game_data:
-                away_team = game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away Team")
-                home_team = game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home Team")
-            else:
-                away_team = "Away Team"
-                home_team = "Home Team"
-        except Exception:
-            # Fallback to hardcoded for known games
-            if game_id == "2024020589":
-                home_team = "Capitals"
-                away_team = "Bruins"
-            elif game_id == "TEST_GAME":
-                home_team = "Home Team"
-                away_team = "Away Team"
-            else:
-                home_team = "Home Team"
-                away_team = "Away Team"
+        # Get team names from cache or NHL API
+        home_team = await r.get(f"game:{game_id}:home_team")
+        away_team = await r.get(f"game:{game_id}:away_team")
+        
+        if not home_team or not away_team:
+            # Cache miss - fetch from NHL API
+            try:
+                game_data = nhl_client.game_center.play_by_play(game_id)
+                if game_data:
+                    away_team = game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away Team")
+                    home_team = game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home Team")
+                    # Cache team names for 24 hours
+                    await r.setex(f"game:{game_id}:home_team", 86400, home_team)
+                    await r.setex(f"game:{game_id}:away_team", 86400, away_team)
+                else:
+                    away_team = "Away Team"
+                    home_team = "Home Team"
+            except Exception:
+                # Fallback to hardcoded for known games
+                if game_id == "2024020589":
+                    home_team = "Capitals"
+                    away_team = "Bruins"
+                elif game_id == "TEST_GAME":
+                    home_team = "Home Team"
+                    away_team = "Away Team"
+                else:
+                    home_team = "Home Team"
+                    away_team = "Away Team"
+                # Cache fallback values
+                await r.setex(f"game:{game_id}:home_team", 86400, home_team)
+                await r.setex(f"game:{game_id}:away_team", 86400, away_team)
         
         # Format strength with empty net and shorthanded indicators
         strength_names = {
@@ -574,7 +652,7 @@ async def get_winprob_friendly(game_id: str):
         raise HTTPException(status_code=404, detail="No prediction yet for this game")
 
 @app.get("/v1/games/{game_id}/playbyplay")
-async def get_playbyplay(game_id: str, limit: int = 50):
+async def get_playbyplay(game_id: str, limit: int = 30):
     """Get play-by-play events for a game"""
     r = app.state.redis
     
@@ -583,8 +661,8 @@ async def get_playbyplay(game_id: str, limit: int = 50):
         events = []
         stream_key = "events"
         
-        # Read events from the stream
-        stream_events = await r.xrevrange(stream_key, count=1000)
+        # Read events from the stream (limit to what we need)
+        stream_events = await r.xrevrange(stream_key, count=min(limit * 3, 500))  # Read more to filter, but not too many
         
         # Filter and collect events for this game first
         raw_events = []
@@ -602,6 +680,10 @@ async def get_playbyplay(game_id: str, limit: int = 50):
         # Sort by timestamp (oldest first) for score tracking
         raw_events.sort(key=lambda x: x[1].get("ts", 0))
         
+        # Collect all unique player IDs for batch lookup
+        player_ids = [event_data.get("player_id") for _, event_data in raw_events if event_data.get("player_id")]
+        player_names = await get_player_names_batch(player_ids, r)
+        
         # Track score progression chronologically
         home_score = 0
         away_score = 0
@@ -612,11 +694,9 @@ async def get_playbyplay(game_id: str, limit: int = 50):
             event_type = event_data.get("event_type", "UNKNOWN")
             team = event_data.get("team", "UNKNOWN")
             
-            # Get player name if available
+            # Get player name from batch lookup
             player_id = event_data.get("player_id")
-            player_name = None
-            if player_id:
-                player_name = await get_player_name(player_id)
+            player_name = player_names.get(player_id) if player_id else None
             
             # Format event description
             event_desc = event_type
@@ -673,18 +753,26 @@ async def get_playbyplay(game_id: str, limit: int = 50):
         # Sort by timestamp (most recent first) for display
         events.sort(key=lambda x: x["timestamp"], reverse=True)
         
-        # Get game info for team names
-        try:
-            game_data = nhl_client.game_center.play_by_play(game_id)
-            if game_data:
-                home_team = game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home Team")
-                away_team = game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away Team")
-            else:
+        # Get game info for team names from cache
+        home_team = await r.get(f"game:{game_id}:home_team")
+        away_team = await r.get(f"game:{game_id}:away_team")
+        
+        if not home_team or not away_team:
+            # Cache miss - fetch from NHL API
+            try:
+                game_data = nhl_client.game_center.play_by_play(game_id)
+                if game_data:
+                    home_team = game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home Team")
+                    away_team = game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away Team")
+                    # Cache team names for 24 hours
+                    await r.setex(f"game:{game_id}:home_team", 86400, home_team)
+                    await r.setex(f"game:{game_id}:away_team", 86400, away_team)
+                else:
+                    home_team = "Home Team"
+                    away_team = "Away Team"
+            except Exception:
                 home_team = "Home Team"
                 away_team = "Away Team"
-        except Exception:
-            home_team = "Home Team"
-            away_team = "Away Team"
         
         return {
             "game_id": game_id,

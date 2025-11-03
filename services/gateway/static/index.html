@@ -744,7 +744,7 @@
             feed.innerHTML = '<div class="spinner"></div>';
 
             try {
-                const response = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=50`);
+                const response = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=30`);
                 const data = await response.json();
 
                 if (response.ok && data.events) {
