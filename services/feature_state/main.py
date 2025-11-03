@@ -47,6 +47,18 @@ async def process_events():
                     strength = payload.get("strength", "EV")
                     empty_net = payload.get("empty_net", False)
 
+                    # Check if we need to reset this game's state (new ingestion)
+                    reset_flag = await r.get(f"reset_game:{game_id}")
+                    if reset_flag:
+                        # Reset in-memory state for this game
+                        if game_id in states:
+                            del states[game_id]
+                        if game_id in game_starts:
+                            del game_starts[game_id]
+                        # Clear the reset flag
+                        await r.delete(f"reset_game:{game_id}")
+                        print(f"[feature_state] Reset state for game {game_id}")
+
                     # Track first event time for this game
                     if game_id not in game_starts:
                         game_starts[game_id] = ts

@@ -71,6 +71,11 @@ async def run_ingestion(game_id: str, redis: Redis):
         
         # Clear old data for this game
         await redis.delete(f"events:{game_id}")
+        # Clear game state and predictions to prevent accumulation
+        await redis.delete(f"state:{game_id}")
+        await redis.delete(f"pred:{game_id}")
+        # Set a flag to signal feature_state to reset this game's state
+        await redis.setex(f"reset_game:{game_id}", 60, "1")  # Expires in 60 seconds
         
         # Fetch and process game data
         game_data = nhl_client.game_center.play_by_play(game_id)
