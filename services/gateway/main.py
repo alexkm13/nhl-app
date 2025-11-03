@@ -175,10 +175,10 @@ async def run_ingestion(game_id: str, redis: Redis):
             if team == "HOME":
                 if empty_net:
                     if home_skaters == 6:
-                        if away_skaters <= 3:
-                            strength = "ENPP"  # Empty net + power play (definite penalty situation)
+                        if away_skaters < 5:
+                            strength = "ENPP"  # Empty net + power play (opponent has < 5 skaters)
                         else:
-                            strength = "EN"  # Empty net even strength (6v5 or 6v4)
+                            strength = "EN"  # Empty net even strength (6v5)
                     elif away_skaters == 6:
                         # Away has empty net (6 skaters) - HOME is defending against empty net
                         if home_skaters < 5:
@@ -203,10 +203,10 @@ async def run_ingestion(game_id: str, redis: Redis):
             else:  # team == "AWAY"
                 if empty_net:
                     if away_skaters == 6:
-                        if home_skaters <= 3:
-                            strength = "ENPP"  # Empty net + power play (definite penalty situation)
+                        if home_skaters < 5:
+                            strength = "ENPP"  # Empty net + power play (opponent has < 5 skaters)
                         else:
-                            strength = "EN"  # Empty net even strength (6v5 or 6v4)
+                            strength = "EN"  # Empty net even strength (6v5)
                     elif home_skaters == 6:
                         # Home has empty net (6 skaters) - AWAY is defending against empty net
                         if away_skaters < 5:
