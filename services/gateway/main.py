@@ -3,6 +3,7 @@ import json
 import os
 import random
 import subprocess
+import time
 from datetime import datetime
 
 import httpx
@@ -684,126 +685,220 @@ async def get_winprob_friendly(game_id: str):
 
 @app.get("/v1/games/{game_id}/playbyplay")
 async def get_playbyplay(game_id: str, limit: int = 30):
-    """Get play-by-play events for a game"""
+    """Get play-by-play events for a game directly from NHL API"""
     r = app.state.redis
     
     try:
-        # Get events from Redis stream
-        events = []
-        stream_key = "events"
+        # Fetch play-by-play directly from NHL API for accurate data
+        game_data = await fetch_nhl_play_by_play(game_id)
+        if not game_data:
+            raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
         
-        # Read events from the stream (limit to what we need)
-        stream_events = await r.xrevrange(stream_key, count=min(limit * 3, 500))  # Read more to filter, but not too many
+        # Get team info
+        home_team_id = game_data.get("homeTeam", {}).get("id")
+        away_team_id = game_data.get("awayTeam", {}).get("id")
+        home_team = game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home Team")
+        away_team = game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away Team")
         
-        # Filter and collect events for this game first
-        raw_events = []
-        for event_id, fields in stream_events:
-            try:
-                event_data = json.loads(fields.get("json", "{}"))
-                if event_data.get("game_id") == game_id:
-                    raw_events.append((event_id, event_data))
-                    if len(raw_events) >= limit:
-                        break
-            except Exception as e:
-                print(f"[gateway] Error parsing event: {e}")
-                continue
+        # Cache team names
+        await r.setex(f"game:{game_id}:home_team", 86400, home_team)
+        await r.setex(f"game:{game_id}:away_team", 86400, away_team)
         
-        # Sort by timestamp (oldest first) for score tracking
-        raw_events.sort(key=lambda x: x[1].get("ts", 0))
+        # Get plays from API
+        plays = game_data.get("plays", [])
+        if not plays:
+            return {
+                "game_id": game_id,
+                "home_team": home_team,
+                "away_team": away_team,
+                "events": []
+            }
+        
+        # Get game start time for timestamp calculation
+        game_start_str = game_data.get("startTimeUTC", "")
+        game_start_ts = None
+        if game_start_str:
+            game_start = datetime.fromisoformat(game_start_str.replace('Z', '+00:00'))
+            game_start_ts = game_start.timestamp()
+        
+        # Event type mapping
+        type_mapping = {
+            502: "FACEOFF", 503: "HIT", 504: "HIT",
+            505: "GOAL", 506: "SHOT", 507: "SHOT",
+            508: "BLOCK", 509: "PENALTY",
+        }
         
         # Collect all unique player IDs for batch lookup
-        player_ids = [event_data.get("player_id") for _, event_data in raw_events if event_data.get("player_id")]
-        player_names = await get_player_names_batch(player_ids, r)
+        player_ids = set()
+        processed_plays = []
+        
+        for play in plays:
+            type_code = play.get("typeCode")
+            if type_code in [520, 516, 517, 524]:  # Skip period-start, stoppage, period-end, game-end
+                continue
+            
+            mapped_type = type_mapping.get(type_code, "SHOT")
+            details = play.get("details", {})
+            
+            # Extract player IDs
+            if mapped_type == "FACEOFF":
+                pid = details.get("winningPlayerId")
+                if pid:
+                    player_ids.add(pid)
+            elif mapped_type == "GOAL":
+                pid = details.get("scoringPlayerId")
+                if pid:
+                    player_ids.add(pid)
+            elif mapped_type in ["SHOT", "BLOCK"]:
+                pid = details.get("shootingPlayerId")
+                if pid:
+                    player_ids.add(pid)
+            elif mapped_type == "HIT":
+                pid = details.get("hittingPlayerId")
+                if pid:
+                    player_ids.add(pid)
+            elif mapped_type == "PENALTY":
+                pid = details.get("playerId")
+                if pid:
+                    player_ids.add(pid)
+            
+            processed_plays.append(play)
+        
+        # Batch fetch player names
+        player_names = await get_player_names_batch(list(player_ids), r) if player_ids else {}
         
         # Track score progression chronologically
         home_score = 0
         away_score = 0
+        events = []
         
-        # Process events and format them
-        for event_id, event_data in raw_events:
-            # Update score if this is a goal (before adding event)
-            event_type = event_data.get("event_type", "UNKNOWN")
-            team = event_data.get("team", "UNKNOWN")
+        # Process events in chronological order (they're already sorted by the API)
+        for play in processed_plays:
+            type_code = play.get("typeCode")
+            mapped_type = type_mapping.get(type_code, "SHOT")
+            details = play.get("details", {})
             
-            # Get player name from batch lookup
-            player_id = event_data.get("player_id")
+            # Determine team
+            event_owner_id = details.get("eventOwnerTeamId")
+            if event_owner_id == home_team_id:
+                team = "HOME"
+            elif event_owner_id == away_team_id:
+                team = "AWAY"
+            else:
+                team = "HOME" if play.get("homeTeamDefendingSide") == "right" else "AWAY"
+            
+            # Get player info
+            player_id = None
+            if mapped_type == "FACEOFF":
+                player_id = details.get("winningPlayerId")
+            elif mapped_type == "GOAL":
+                player_id = details.get("scoringPlayerId")
+            elif mapped_type in ["SHOT", "BLOCK"]:
+                player_id = details.get("shootingPlayerId")
+            elif mapped_type == "HIT":
+                player_id = details.get("hittingPlayerId")
+            elif mapped_type == "PENALTY":
+                player_id = details.get("playerId")
+            
             player_name = player_names.get(player_id) if player_id else None
             
+            # Get strength situation
+            situation = play.get("situationCode", "1551")
+            away_skaters = int(situation[1]) if len(situation) >= 2 else 5
+            home_skaters = int(situation[3]) if len(situation) >= 4 else 5
+            
+            empty_net = (away_skaters == 6 or home_skaters == 6 or away_skaters == 0 or home_skaters == 0)
+            
+            # Determine strength
+            if team == "HOME":
+                if empty_net:
+                    if home_skaters == 6:
+                        strength = "ENPP" if away_skaters < 5 else "EN"
+                    elif away_skaters == 6:
+                        strength = "PK"
+                    else:
+                        strength = "PK"
+                elif home_skaters == 5 and away_skaters == 5:
+                    strength = "EV"
+                elif home_skaters > away_skaters:
+                    strength = "PP"
+                elif home_skaters < away_skaters:
+                    strength = "SH" if home_skaters < 5 else "PK"
+                else:
+                    strength = "EV"
+            else:  # AWAY
+                if empty_net:
+                    if away_skaters == 6:
+                        strength = "ENPP" if home_skaters < 5 else "EN"
+                    elif home_skaters == 6:
+                        strength = "PK"
+                    else:
+                        strength = "PK"
+                elif away_skaters == 5 and home_skaters == 5:
+                    strength = "EV"
+                elif away_skaters > home_skaters:
+                    strength = "PP"
+                elif away_skaters < home_skaters:
+                    strength = "SH" if away_skaters < 5 else "PK"
+                else:
+                    strength = "EV"
+            
+            # Calculate timestamp
+            time_in_period = play.get("timeInPeriod", "00:00")
+            period = play.get("periodDescriptor", {}).get("number", 1)
+            
+            if game_start_ts:
+                try:
+                    minutes, seconds = map(int, time_in_period.split(":"))
+                    elapsed_seconds = minutes * 60 + seconds
+                    period_offset = (period - 1) * 1200
+                    timestamp = game_start_ts + period_offset + elapsed_seconds
+                except:
+                    timestamp = time.time()
+            else:
+                timestamp = time.time()
+            
             # Format event description
-            event_desc = event_type
-            if event_type == "FACEOFF":
+            event_desc = mapped_type
+            if mapped_type == "FACEOFF":
                 event_desc = "Faceoff won"
-            elif event_type == "GOAL":
+            elif mapped_type == "GOAL":
                 event_desc = "Goal"
-            elif event_type == "SHOT":
+            elif mapped_type == "SHOT":
                 event_desc = "Shot on goal"
-            elif event_type == "BLOCK":
+            elif mapped_type == "BLOCK":
                 event_desc = "Shot blocked"
-            elif event_type == "HIT":
+            elif mapped_type == "HIT":
                 event_desc = "Hit"
-            elif event_type == "PENALTY":
+            elif mapped_type == "PENALTY":
                 event_desc = "Penalty"
             
-            # Calculate time elapsed (event is in absolute timestamp)
-            ts = event_data.get("ts", 0)
-            
-            # For goals, show score after the goal
-            if event_type == "GOAL":
-                if team == "HOME":
-                    display_home_score = home_score + 1
-                    display_away_score = away_score
-                else:
-                    display_home_score = home_score
-                    display_away_score = away_score + 1
-            else:
-                display_home_score = home_score
-                display_away_score = away_score
-            
-            # Add event with current/updated score
-            events.append({
-                "id": event_id,
-                "timestamp": ts,
-                "event_type": event_type,
-                "description": event_desc,
-                "player": player_name,
-                "player_id": player_id,
-                "team": team,
-                "strength": event_data.get("strength", "EV"),
-                "empty_net": event_data.get("empty_net", False),
-                "home_score": display_home_score,
-                "away_score": display_away_score,
-            })
-            
-            # Update score after this event (for next event)
-            if event_type == "GOAL":
+            # Update score for goals
+            if mapped_type == "GOAL":
                 if team == "HOME":
                     home_score += 1
                 else:
                     away_score += 1
+            
+            # Add event
+            events.append({
+                "id": f"{game_id}-{play.get('eventId', len(events))}",
+                "timestamp": timestamp,
+                "event_type": mapped_type,
+                "description": event_desc,
+                "player": player_name,
+                "player_id": player_id,
+                "team": team,
+                "strength": strength,
+                "empty_net": empty_net,
+                "home_score": home_score,
+                "away_score": away_score,
+                "period": period,
+                "time_in_period": time_in_period,
+            })
         
         # Sort by timestamp (most recent first) for display
         events.sort(key=lambda x: x["timestamp"], reverse=True)
-        
-        # Get game info for team names from cache
-        home_team = await r.get(f"game:{game_id}:home_team")
-        away_team = await r.get(f"game:{game_id}:away_team")
-        
-        if not home_team or not away_team:
-            # Cache miss - fetch from NHL API
-            try:
-                game_data = await fetch_nhl_play_by_play(game_id)
-                if game_data:
-                    home_team = game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home Team")
-                    away_team = game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away Team")
-                    # Cache team names for 24 hours
-                    await r.setex(f"game:{game_id}:home_team", 86400, home_team)
-                    await r.setex(f"game:{game_id}:away_team", 86400, away_team)
-                else:
-                    home_team = "Home Team"
-                    away_team = "Away Team"
-            except Exception:
-                home_team = "Home Team"
-                away_team = "Away Team"
         
         return {
             "game_id": game_id,
@@ -811,6 +906,8 @@ async def get_playbyplay(game_id: str, limit: int = 30):
             "away_team": away_team,
             "events": events[:limit]
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching play-by-play: {str(e)}")
 
