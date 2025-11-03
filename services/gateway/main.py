@@ -828,6 +828,24 @@ async def get_final_score(game_id: str):
         else:
             winner = "TIE"
         
+        # Check if game went to overtime or shootout by looking at the maximum period
+        max_period = 3  # Default to 3 periods (regulation)
+        overtime_type = None  # None, "OT", or "SO"
+        
+        plays = game_data.get("plays", [])
+        if plays:
+            # Find the maximum period number from all plays
+            for play in plays:
+                period_descriptor = play.get("periodDescriptor", {})
+                period_number = period_descriptor.get("number", 1)
+                if period_number > max_period:
+                    max_period = period_number
+                    # Period 4 = Overtime, Period 5 = Shootout
+                    if period_number == 4:
+                        overtime_type = "OT"
+                    elif period_number >= 5:
+                        overtime_type = "SO"
+        
         return {
             "game_id": game_id,
             "game_state": game_state,
@@ -838,7 +856,8 @@ async def get_final_score(game_id: str):
             "away_logo": away_logo,
             "home_score": home_score,
             "away_score": away_score,
-            "winner": winner
+            "winner": winner,
+            "overtime_type": overtime_type
         }
     except HTTPException:
         raise

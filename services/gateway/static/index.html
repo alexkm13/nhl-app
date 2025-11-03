@@ -115,6 +115,14 @@
                         const awayIsWinner = awayScore > homeScore;
                         const isTie = homeScore === awayScore;
                         
+                        // Format final status text
+                        let finalStatusText = "▼ Final";
+                        if (isFinal && game.overtime_type === "OT") {
+                            finalStatusText = "▼ Final/OT";
+                        } else if (isFinal && game.overtime_type === "SO") {
+                            finalStatusText = "▼ Final/SO";
+                        }
+                        
                         // Determine winner/loser for final games
                         if (isFinal && !isTie) {
                             const winnerRow = homeIsWinner ?
@@ -146,7 +154,7 @@
                             return `
                                 <div class="game-card" onclick="selectGame('${game.game_id}')">
                                     <div class="game-card-header">
-                                        <span class="game-status-text">▼ Final</span>
+                                        <span class="game-status-text">${finalStatusText}</span>
                                     </div>
                                     <div class="game-score-teams">
                                         ${loserRow}
@@ -401,10 +409,18 @@
                         <div class="final-team-score">${finalHomeScore}</div>
                     </div>`;
                 
+                // Format final status text
+                let finalStatusText = "▼ Final";
+                if (finalData.overtime_type === "OT") {
+                    finalStatusText = "▼ Final/OT";
+                } else if (finalData.overtime_type === "SO") {
+                    finalStatusText = "▼ Final/SO";
+                }
+                
                 gameDetails.innerHTML = `
                     <div class="final-score-container">
                         <div class="final-score-header">
-                            <span class="final-status">▼ Final</span>
+                            <span class="final-status">${finalStatusText}</span>
                         </div>
                         <div class="final-score-teams">
                             ${loserRow}
