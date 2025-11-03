@@ -652,23 +652,35 @@ async def get_winprob_friendly(game_id: str):
         if last_player_id:
             last_player_name = await get_player_name(last_player_id, r)
         
-        # Get team names from cache or NHL API
+        # Get team names and logos from cache or NHL API
         home_team = await r.get(f"game:{game_id}:home_team")
         away_team = await r.get(f"game:{game_id}:away_team")
+        home_logo = await r.get(f"game:{game_id}:home_logo")
+        away_logo = await r.get(f"game:{game_id}:away_logo")
         
-        if not home_team or not away_team:
+        if not home_team or not away_team or not home_logo or not away_logo:
             # Cache miss - fetch from NHL API
             try:
-                game_data = nhl_client.game_center.play_by_play(game_id)
+                game_data = await fetch_nhl_play_by_play(game_id)
                 if game_data:
-                    away_team = game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away Team")
-                    home_team = game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home Team")
-                    # Cache team names for 24 hours
+                    away_team_data = game_data.get("awayTeam", {})
+                    home_team_data = game_data.get("homeTeam", {})
+                    away_team = away_team_data.get("commonName", {}).get("default", "Away Team")
+                    home_team = home_team_data.get("commonName", {}).get("default", "Home Team")
+                    away_logo = away_team_data.get("logo", "")
+                    home_logo = home_team_data.get("logo", "")
+                    # Cache team names and logos for 24 hours
                     await r.setex(f"game:{game_id}:home_team", 86400, home_team)
                     await r.setex(f"game:{game_id}:away_team", 86400, away_team)
+                    if home_logo:
+                        await r.setex(f"game:{game_id}:home_logo", 86400, home_logo)
+                    if away_logo:
+                        await r.setex(f"game:{game_id}:away_logo", 86400, away_logo)
                 else:
                     away_team = "Away Team"
                     home_team = "Home Team"
+                    away_logo = ""
+                    home_logo = ""
             except Exception:
                 # Fallback to hardcoded for known games
                 if game_id == "2024020589":
@@ -680,6 +692,8 @@ async def get_winprob_friendly(game_id: str):
                 else:
                     home_team = "Home Team"
                     away_team = "Away Team"
+                away_logo = ""
+                home_logo = ""
                 # Cache fallback values
                 await r.setex(f"game:{game_id}:home_team", 86400, home_team)
                 await r.setex(f"game:{game_id}:away_team", 86400, away_team)
@@ -718,11 +732,13 @@ async def get_winprob_friendly(game_id: str):
             "score": {
                 "home": {
                     "team": home_team,
-                    "goals": home_score
+                    "goals": home_score,
+                    "logo": home_logo or ""
                 },
                 "away": {
                     "team": away_team,
-                    "goals": away_score
+                    "goals": away_score,
+                    "logo": away_logo or ""
                 },
                 "display": f"{home_team} {home_score} - {away_score} {away_team}"
             },
@@ -753,10 +769,14 @@ async def get_final_score(game_id: str):
             raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
         
         game_state = game_data.get("gameState", "")
-        home_team = game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home Team")
-        away_team = game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away Team")
-        home_score = game_data.get("homeTeam", {}).get("score", 0)
-        away_score = game_data.get("awayTeam", {}).get("score", 0)
+        home_team_data = game_data.get("homeTeam", {})
+        away_team_data = game_data.get("awayTeam", {})
+        home_team = home_team_data.get("commonName", {}).get("default", "Home Team")
+        away_team = away_team_data.get("commonName", {}).get("default", "Away Team")
+        home_logo = home_team_data.get("logo", "")
+        away_logo = away_team_data.get("logo", "")
+        home_score = home_team_data.get("score", 0)
+        away_score = away_team_data.get("score", 0)
         
         # Determine winner
         winner = None
@@ -773,6 +793,8 @@ async def get_final_score(game_id: str):
             "is_final": game_state in ["OFF", "FINAL"],
             "home_team": home_team,
             "away_team": away_team,
+            "home_logo": home_logo,
+            "away_logo": away_logo,
             "home_score": home_score,
             "away_score": away_score,
             "winner": winner

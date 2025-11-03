@@ -313,25 +313,32 @@
                 const awayIsWinner = winner === "AWAY";
                 const isTie = winner === "TIE";
                 
+                const finalHomeLogo = finalData.home_logo || '';
+                const finalAwayLogo = finalData.away_logo || '';
+                
                 // Order: loser first (top), winner second (bottom) with triangle
                 const winnerRow = homeIsWinner ? 
                     `<div class="final-team-row winner">
                         <div class="final-winner-indicator">▶</div>
+                        <img src="${finalHomeLogo}" alt="${finalHomeTeam}" class="final-team-logo" onerror="this.style.display='none'">
                         <div class="final-team-name">${finalHomeTeam}</div>
                         <div class="final-team-score">${finalHomeScore}</div>
                     </div>` :
                     `<div class="final-team-row winner">
                         <div class="final-winner-indicator">▶</div>
+                        <img src="${finalAwayLogo}" alt="${finalAwayTeam}" class="final-team-logo" onerror="this.style.display='none'">
                         <div class="final-team-name">${finalAwayTeam}</div>
                         <div class="final-team-score">${finalAwayScore}</div>
                     </div>`;
                 
                 const loserRow = homeIsWinner ?
                     `<div class="final-team-row loser">
+                        <img src="${finalAwayLogo}" alt="${finalAwayTeam}" class="final-team-logo" onerror="this.style.display='none'">
                         <div class="final-team-name">${finalAwayTeam}</div>
                         <div class="final-team-score">${finalAwayScore}</div>
                     </div>` :
                     `<div class="final-team-row loser">
+                        <img src="${finalHomeLogo}" alt="${finalHomeTeam}" class="final-team-logo" onerror="this.style.display='none'">
                         <div class="final-team-name">${finalHomeTeam}</div>
                         <div class="final-team-score">${finalHomeScore}</div>
                     </div>`;
@@ -353,13 +360,28 @@
                 return;
             }
             
+            const homeLogo = score.home.logo || '';
+            const awayLogo = score.away.logo || '';
+            
             gameDetails.innerHTML = `
                 <div style="margin-bottom: 20px;">
                     <div style="font-size: 1.5em; font-weight: 700; margin-bottom: 10px;">${game.matchup}</div>
                     <div style="color: #aaaaaa; font-size: 0.9em;">${game.favorite}</div>
                 </div>
 
-                <div class="score-display">${homeScore} - ${awayScore}</div>
+                <div class="score-display-container">
+                    <div class="score-team">
+                        <img src="${awayLogo}" alt="${awayTeam}" class="score-logo" onerror="this.style.display='none'">
+                        <div class="score-team-name">${awayTeam}</div>
+                        <div class="score-number">${awayScore}</div>
+                    </div>
+                    <div class="score-separator">-</div>
+                    <div class="score-team">
+                        <img src="${homeLogo}" alt="${homeTeam}" class="score-logo" onerror="this.style.display='none'">
+                        <div class="score-team-name">${homeTeam}</div>
+                        <div class="score-number">${homeScore}</div>
+                    </div>
+                </div>
 
                 <div class="tabs">
                     <button class="tab active" onclick="switchTab('overview', '${gameId}')">Overview</button>
