@@ -526,22 +526,6 @@
         }
 
         function generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive) {
-            if (!historyData || historyData.length === 0) {
-                // Fallback to bar display if no history
-                return `
-                    <div class="win-prob-current">
-                        <div class="win-prob-team">
-                            <span>${homeTeam}</span>
-                            <span class="win-prob-percentage">${homeProb}%</span>
-                        </div>
-                        <div class="win-prob-team">
-                            <span>${awayTeam}</span>
-                            <span class="win-prob-percentage">${awayProb}%</span>
-                        </div>
-                    </div>
-                `;
-            }
-            
             // Determine graph dimensions
             const width = 600;
             const height = 200;
@@ -549,18 +533,46 @@
             const chartWidth = width - padding.left - padding.right;
             const chartHeight = height - padding.top - padding.bottom;
             
-            // Calculate time range
-            const times = historyData.map(d => d.ts);
-            const minTime = Math.min(...times);
-            const maxTime = Math.max(...times);
-            const timeRange = maxTime - minTime || 1;
+            let points = [];
+            let minTime, maxTime, timeRange;
             
-            // Map data points to SVG coordinates
-            const points = historyData.map((d, i) => {
-                const x = padding.left + (d.ts - minTime) / timeRange * chartWidth;
-                const y = padding.top + chartHeight - (d.p_home_win * chartHeight);
-                return { x, y };
-            });
+            // If no historical data, create a single point at current probability
+            if (!historyData || historyData.length === 0) {
+                // Create a simple horizontal line at current probability
+                const currentProb = homeProb / 100;
+                const x1 = padding.left;
+                const x2 = width - padding.right;
+                const y = padding.top + chartHeight - (currentProb * chartHeight);
+                points = [
+                    { x: x1, y: y },
+                    { x: x2, y: y }
+                ];
+                minTime = 0;
+                maxTime = 3600; // Assume 60 minutes for a full game
+                timeRange = maxTime - minTime;
+            } else {
+                // Calculate time range from historical data
+                const times = historyData.map(d => d.ts);
+                minTime = Math.min(...times);
+                maxTime = Math.max(...times);
+                timeRange = maxTime - minTime || 1;
+                
+                // Map data points to SVG coordinates
+                points = historyData.map((d, i) => {
+                    const x = padding.left + (d.ts - minTime) / timeRange * chartWidth;
+                    const y = padding.top + chartHeight - (d.p_home_win * chartHeight);
+                    return { x, y };
+                });
+                
+                // Add current point if it's not already in the data
+                const lastPoint = points[points.length - 1];
+                if (!lastPoint || Math.abs(lastPoint.x - (width - padding.right)) > 10) {
+                    const currentProb = homeProb / 100;
+                    const currentX = width - padding.right;
+                    const currentY = padding.top + chartHeight - (currentProb * chartHeight);
+                    points.push({ x: currentX, y: currentY });
+                }
+            }
             
             // Build SVG path
             let path = '';
@@ -583,9 +595,13 @@
             
             // Determine period markers
             const periods = [];
-            const totalTime = maxTime - minTime;
-            if (totalTime < 4000) {  // Typical NHL game is ~3600 seconds
+            if (timeRange > 0 && timeRange < 4000) {  // Typical NHL game is ~3600 seconds
                 // Mark periods at 1/3, 2/3, and end (roughly)
+                periods.push({ x: padding.left + chartWidth / 3, label: '1st' });
+                periods.push({ x: padding.left + chartWidth * 2 / 3, label: '2nd' });
+                periods.push({ x: padding.left + chartWidth, label: '3rd' });
+            } else if (timeRange === 0 || !historyData || historyData.length === 0) {
+                // For games without history, show period markers at even intervals
                 periods.push({ x: padding.left + chartWidth / 3, label: '1st' });
                 periods.push({ x: padding.left + chartWidth * 2 / 3, label: '2nd' });
                 periods.push({ x: padding.left + chartWidth, label: '3rd' });
