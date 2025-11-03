@@ -14,7 +14,7 @@ services:
     build: ./services/ingestor
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - GAME_ID=2024020589
+      - GAME_ID=2025020199
     depends_on:
       redis:
         condition: service_healthy

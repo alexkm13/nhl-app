@@ -2,12 +2,16 @@ import json
 import os
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from nhlpy import NHLClient
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from pydantic import BaseModel
 from redis.asyncio import Redis
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 app = FastAPI(title="GameCast++ Gateway")
+
+# Initialize NHL client
+nhl_client = NHLClient()
 
 class WinProb(BaseModel):
     game_id: str
@@ -49,6 +53,66 @@ async def startup():
 async def shutdown():
     await app.state.redis.aclose()
 
+@app.get("/v1/games")
+async def list_games():
+    """List today's NHL games"""
+    try:
+        schedule = nhl_client.schedule.daily_schedule()
+        
+        games = []
+        if isinstance(schedule, dict) and "games" in schedule:
+            schedule = schedule["games"]
+        elif isinstance(schedule, dict) and "gameWeek" in schedule:
+            schedule = schedule["gameWeek"][0].get("games", []) if schedule["gameWeek"] else []
+        
+        for game in schedule:
+            if isinstance(game, dict):
+                games.append({
+                    "game_id": str(game.get("id", "")),
+                    "away_team": game.get("awayTeam", {}).get("abbrev", ""),
+                    "home_team": game.get("homeTeam", {}).get("abbrev", ""),
+                    "venue": game.get("venue", {}).get("default", ""),
+                    "game_time": game.get("startTimeUTC", ""),
+                    "game_state": game.get("gameState", ""),
+                })
+        
+        return {
+            "date": schedule.get("date", "") if isinstance(schedule, dict) else "",
+            "games": games,
+            "total_games": len(games)
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "games": [],
+            "total_games": 0
+        }
+
+@app.post("/v1/games/{game_id}/start")
+async def start_game_ingestion(game_id: str):
+    """Trigger ingestion for a specific game - returns instructions"""
+    try:
+        # Verify game exists
+        game_data = nhl_client.game_center.play_by_play(game_id)
+        if not game_data:
+            raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
+        
+        home_team = game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home")
+        away_team = game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away")
+        
+        return {
+            "message": f"To start ingesting {away_team} @ {home_team}",
+            "game_id": game_id,
+            "matchup": f"{away_team} @ {home_team}",
+            "instructions": [
+                "Update docker-compose.yaml: set GAME_ID=" + game_id,
+                "Run: docker compose up -d --build ingestor",
+                "Or run: GAME_ID=" + game_id + " docker compose restart ingestor"
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
 @app.get("/v1/games/{game_id}/winprob", response_model=WinProb)
 async def get_winprob(game_id: str):
     r = app.state.redis
@@ -88,18 +152,26 @@ async def get_winprob_friendly(game_id: str):
         strength = state.get("strength", "EV")
         last_event = state.get("last_event", "Unknown")
         
-        # Get team names for this game
-        # Game ID 2024020589 = Boston Bruins @ Washington Capitals (Nov 2, 2024)
-        if game_id == "2024020589":
-            home_team = "Washington Capitals"
-            away_team = "Boston Bruins"
-        elif game_id == "TEST_GAME":
-            home_team = "Home Team"
-            away_team = "Away Team"
-        else:
-            # Default fallback - could be enhanced with game ID lookup
-            home_team = "Home Team"
-            away_team = "Away Team"
+        # Get team names dynamically from NHL API
+        try:
+            game_data = nhl_client.game_center.play_by_play(game_id)
+            if game_data:
+                away_team = game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away Team")
+                home_team = game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home Team")
+            else:
+                away_team = "Away Team"
+                home_team = "Home Team"
+        except Exception:
+            # Fallback to hardcoded for known games
+            if game_id == "2024020589":
+                home_team = "Capitals"
+                away_team = "Bruins"
+            elif game_id == "TEST_GAME":
+                home_team = "Home Team"
+                away_team = "Away Team"
+            else:
+                home_team = "Home Team"
+                away_team = "Away Team"
         
         # Format strength
         strength_names = {
