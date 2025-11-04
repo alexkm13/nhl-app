@@ -2,7 +2,6 @@ import asyncio
 import os
 import json
 import random
-import time
 
 import psycopg
 from prometheus_client import Counter, Histogram, start_http_server
@@ -38,7 +37,6 @@ async def run_model():
     start_http_server(9000)
     print('[model_svc] Prometheus metrics on :9000')
     model = BaselineModel()
-    start = time.time()
 
     while True:
         resp = await r.xreadgroup(GROUP, CONSUMER, streams={STREAM_FEATURES: ">"}, count=10, block=1000)

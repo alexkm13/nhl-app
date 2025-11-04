@@ -9,6 +9,8 @@ import httpx
 import psycopg
 from redis.asyncio import Redis
 
+from events import GameEvent
+
 # NHL API base URL
 NHL_API_BASE = "https://api-web.nhle.com/v1"
 
@@ -25,8 +27,6 @@ async def fetch_nhl_play_by_play(game_id: str) -> dict:
     except Exception as e:
         print(f"[ingestor] Error fetching NHL play-by-play for game {game_id}: {e}")
         return None
-
-from events import GameEvent
 
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
 
@@ -135,7 +135,7 @@ async def produce_nhl_game(r: Redis, game_id: str):
     plays = game_data.get("plays", [])
     
     if not plays:
-        print(f"[ingestor] No play-by-play data available, using synthetic")
+        print("[ingestor] No play-by-play data available, using synthetic")
         await produce_synthetic_game(r, game_id)
         return
     
