@@ -2,7 +2,6 @@ import asyncio
 import json
 import math
 import os
-import random
 import time
 from datetime import datetime
 
@@ -11,7 +10,6 @@ import psycopg
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from pydantic import BaseModel
 from redis.asyncio import Redis
@@ -32,7 +30,27 @@ app.add_middleware(
 # Serve static files
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.exists(static_dir):
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    from fastapi.staticfiles import StaticFiles
+    
+    # Custom static file handler with no-cache headers
+    class NoCacheStaticFiles(StaticFiles):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+        
+        async def __call__(self, scope, receive, send):
+            async def send_wrapper(message):
+                if message["type"] == "http.response.start":
+                    headers = dict(message.get("headers", []))
+                    # Add no-cache headers
+                    headers[b"cache-control"] = b"no-cache, no-store, must-revalidate, max-age=0"
+                    headers[b"pragma"] = b"no-cache"
+                    headers[b"expires"] = b"0"
+                    message["headers"] = list(headers.items())
+                await send(message)
+            
+            await super().__call__(scope, receive, send_wrapper)
+    
+    app.mount("/static", NoCacheStaticFiles(directory=static_dir), name="static")
 
 # NHL API base URL
 NHL_API_BASE = "https://api-web.nhle.com/v1"
@@ -268,7 +286,7 @@ def calculate_win_probability(
             if len(parts) == 2:
                 minutes, seconds = int(parts[0]), int(parts[1])
                 time_remaining_seconds = minutes * 60 + seconds
-        except:
+        except (ValueError, IndexError):
             pass
     
     # Determine total time remaining in game
@@ -508,9 +526,27 @@ async def favicon():
 @app.get("/")
 async def root():
     """Serve the main web interface"""
+    from fastapi.responses import Response
+    import time
     static_file = os.path.join(static_dir, "index.html")
     if os.path.exists(static_file):
-        return FileResponse(static_file)
+        with open(static_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        # Add cache-busting timestamp to script tags and CSS
+        timestamp = int(time.time())
+        # Replace CSS and JS references with versioned ones
+        content = content.replace('/static/styles.css?v=', f'/static/styles.css?v={timestamp}&')
+        return Response(
+            content=content,
+            media_type="text/html",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0, private",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "Vary": "Accept-Encoding",
+                "X-Content-Type-Options": "nosniff"
+            }
+        )
     return {"message": "NHL Game Predictor API", "docs": "/docs"}
 
 class WinProb(BaseModel):
@@ -688,7 +724,7 @@ async def run_ingestion(game_id: str, redis: Redis):
                     elapsed_seconds = minutes * 60 + seconds
                     period_offset = (period - 1) * 1200
                     timestamp = game_start_ts + period_offset + elapsed_seconds
-                except:
+                except (ValueError, TypeError):
                     import time
                     timestamp = time.time()
             else:
@@ -1215,8 +1251,6 @@ async def get_game_stats(game_id: str):
         
         # Calculate faceoff stats - need to sum wins and calculate percentage
         def calculate_faceoff_stats(players_dict):
-            total_won = 0
-            total_lost = 0
             for position_group in ["forwards", "defense", "goalies"]:
                 players = players_dict.get(position_group, [])
                 for player in players:
@@ -1297,7 +1331,6 @@ async def get_game_stats(game_id: str):
                     type_code = play.get("typeCode")
                     if type_code == 502:  # FACEOFF
                         details = play.get("details", {})
-                        winning_player_id = details.get("winningPlayerId")
                         event_owner_team_id = details.get("eventOwnerTeamId")
                         
                         # Determine which team won based on eventOwnerTeamId or winningPlayerId
@@ -1331,20 +1364,217 @@ async def get_game_stats(game_id: str):
         # Calculate faceoff percentages from actual play-by-play data
         home_fo_pct, away_fo_pct = await calculate_faceoff_pct_from_plays(game_id, home_team_id, away_team_id)
         
-        # Calculate power play stats - sum PP goals and estimate opportunities
-        home_pp_goals = sum_player_stat(home_players, "powerPlayGoals")
-        away_pp_goals = sum_player_stat(away_players, "powerPlayGoals")
+        # Calculate power play stats - get from team stats first, fallback to player stats
+        # First try to get power play goals from team stats (most reliable)
+        home_pp_goals = None
+        away_pp_goals = None
         
-        # Power play opportunities need to be calculated differently
-        # For now, estimate based on PP goals (rough approximation)
-        # In a real scenario, this should come from play-by-play data
-        # Let's use a placeholder - we can improve this later
-        home_pp_opp = max(home_pp_goals * 2, 0) if home_pp_goals > 0 else 0
-        away_pp_opp = max(away_pp_goals * 2, 0) if away_pp_goals > 0 else 0
+        # Check team-level stats first
+        for field_name in ["powerPlayGoals", "ppGoals", "powerPlayG", "ppG"]:
+            if field_name in home_team:
+                val = home_team.get(field_name)
+                if val is not None and val != "":
+                    home_pp_goals = val
+            if field_name in away_team:
+                val = away_team.get(field_name)
+                if val is not None and val != "":
+                    away_pp_goals = val
+            if home_pp_goals is not None and away_pp_goals is not None:
+                break
         
-        # Calculate PP percentage
-        home_pp_pct = int((home_pp_goals / home_pp_opp * 100)) if home_pp_opp > 0 else 0
-        away_pp_pct = int((away_pp_goals / away_pp_opp * 100)) if away_pp_opp > 0 else 0
+        # Check teamStats.teamSkaterStats (NHL API structure)
+        if home_pp_goals is None or away_pp_goals is None:
+            home_stats = home_team.get("teamStats", {})
+            away_stats = away_team.get("teamStats", {})
+            home_skater_stats = home_stats.get("teamSkaterStats", {}) if home_stats else {}
+            away_skater_stats = away_stats.get("teamSkaterStats", {}) if away_stats else {}
+            
+            if home_skater_stats:
+                for field_name in ["powerPlayGoals", "ppGoals", "powerPlayG", "ppG"]:
+                    if field_name in home_skater_stats:
+                        val = home_skater_stats.get(field_name)
+                        if val is not None and val != "":
+                            home_pp_goals = val
+                            break
+            if away_skater_stats:
+                for field_name in ["powerPlayGoals", "ppGoals", "powerPlayG", "ppG"]:
+                    if field_name in away_skater_stats:
+                        val = away_skater_stats.get(field_name)
+                        if val is not None and val != "":
+                            away_pp_goals = val
+                            break
+        
+        # Fallback to summing player stats if not found in team stats
+        if home_pp_goals is None:
+            home_pp_goals = sum_player_stat(home_players, "powerPlayGoals")
+        if away_pp_goals is None:
+            away_pp_goals = sum_player_stat(away_players, "powerPlayGoals")
+        
+        # Ensure we have valid integers
+        home_pp_goals = int(home_pp_goals) if home_pp_goals is not None else 0
+        away_pp_goals = int(away_pp_goals) if away_pp_goals is not None else 0
+        
+        # Calculate power play opportunities by counting actual penalties from play-by-play
+        async def calculate_pp_opportunities_from_plays(game_id, home_team_id, away_team_id):
+            """Count actual power play opportunities by counting penalties"""
+            try:
+                # Fetch play-by-play data
+                game_data = await fetch_nhl_play_by_play(game_id)
+                if not game_data:
+                    return 0, 0
+                
+                plays = game_data.get("plays", [])
+                if not plays:
+                    return 0, 0
+                
+                home_pp_opp = 0
+                away_pp_opp = 0
+                
+                # Count penalties (type_code 509 = PENALTY)
+                # Each penalty gives the other team a power play opportunity
+                # Track penalties by period and time to detect offsetting penalties
+                # Use a more lenient approach - only skip if penalties are EXACTLY at the same second
+                penalty_times = {}  # Track penalties by timestamp to detect offsetting
+                
+                for play in plays:
+                    type_code = play.get("typeCode")
+                    if type_code == 509:  # PENALTY
+                        details = play.get("details", {})
+                        penalty_duration = details.get("duration", 0)
+                        
+                        # Only count penalties that result in a power play (2+ minutes, excluding fighting majors)
+                        if penalty_duration >= 2:
+                            event_owner_team_id = details.get("eventOwnerTeamId")
+                            
+                            # Get timestamp to detect offsetting penalties
+                            period = play.get("periodDescriptor", {}).get("number", 1)
+                            time_in_period = play.get("timeInPeriod", "00:00")
+                            try:
+                                minutes, seconds = map(int, time_in_period.split(":"))
+                                # Use period:minute:second as key for offsetting detection
+                                timestamp_key = f"{period}:{minutes}:{seconds}"
+                            except (ValueError, TypeError):
+                                timestamp_key = None
+                            
+                            # The team that took the penalty gives the other team a PP opportunity
+                            if event_owner_team_id == home_team_id:
+                                # Home team took penalty, so away team gets PP opportunity
+                                # Check if this is offsetting (both teams had penalty at same EXACT time)
+                                if timestamp_key and timestamp_key in penalty_times:
+                                    other_penalty = penalty_times[timestamp_key]
+                                    if other_penalty["team"] == "away":
+                                        # Both teams had penalties at same exact time - offsetting, don't count
+                                        penalty_times.pop(timestamp_key)
+                                        continue
+                                
+                                away_pp_opp += 1
+                                if timestamp_key:
+                                    penalty_times[timestamp_key] = {"team": "home"}
+                            elif event_owner_team_id == away_team_id:
+                                # Away team took penalty, so home team gets PP opportunity
+                                # Check if this is offsetting
+                                if timestamp_key and timestamp_key in penalty_times:
+                                    other_penalty = penalty_times[timestamp_key]
+                                    if other_penalty["team"] == "home":
+                                        # Both teams had penalties at same exact time - offsetting, don't count
+                                        penalty_times.pop(timestamp_key)
+                                        continue
+                                
+                                home_pp_opp += 1
+                                if timestamp_key:
+                                    penalty_times[timestamp_key] = {"team": "away"}
+                            else:
+                                # Can't determine team from eventOwnerTeamId
+                                # Try to use committedByPlayerId to look up player's team
+                                # For now, skip if we can't determine
+                                print(f"[gateway] Warning: Penalty without eventOwnerTeamId in game {game_id}")
+                                pass
+                
+                print(f"[gateway] Calculated PP opportunities from play-by-play: home={home_pp_opp}, away={away_pp_opp}")
+                
+                return home_pp_opp, away_pp_opp
+            except Exception as e:
+                print(f"[gateway] Error calculating power play opportunities: {e}")
+                return 0, 0
+        
+        # First, try to get power play opportunities directly from boxscore team stats
+        # Check various possible field names - NHL API might use different casing
+        home_pp_opp = None
+        away_pp_opp = None
+        
+        # Check team-level stats first (most reliable)
+        # Try multiple possible field names and also check if they're 0 (which is valid)
+        for field_name in ["powerPlayOpportunities", "powerPlayOpps", "ppOpportunities", "ppOpps", "powerPlayOps", "ppOpportunities"]:
+            if field_name in home_team:
+                val = home_team.get(field_name)
+                if val is not None and val != "":
+                    home_pp_opp = val
+            if field_name in away_team:
+                val = away_team.get(field_name)
+                if val is not None and val != "":
+                    away_pp_opp = val
+            if home_pp_opp is not None and away_pp_opp is not None:
+                break
+        
+        # Check teamStats.teamSkaterStats (NHL API structure)
+        if home_pp_opp is None or away_pp_opp is None:
+            home_stats = home_team.get("teamStats", {})
+            away_stats = away_team.get("teamStats", {})
+            home_skater_stats = home_stats.get("teamSkaterStats", {}) if home_stats else {}
+            away_skater_stats = away_stats.get("teamSkaterStats", {}) if away_stats else {}
+            
+            if home_skater_stats:
+                for field_name in ["powerPlayOpportunities", "powerPlayOpps", "ppOpportunities"]:
+                    if field_name in home_skater_stats:
+                        val = home_skater_stats.get(field_name)
+                        if val is not None and val != "":
+                            home_pp_opp = val
+                            break
+            if away_skater_stats:
+                for field_name in ["powerPlayOpportunities", "powerPlayOpps", "ppOpportunities"]:
+                    if field_name in away_skater_stats:
+                        val = away_skater_stats.get(field_name)
+                        if val is not None and val != "":
+                            away_pp_opp = val
+                            break
+            
+            # Also check teamStats directly (fallback)
+            if home_pp_opp is None and home_stats:
+                for field_name in ["powerPlayOpportunities", "powerPlayOpps", "ppOpportunities"]:
+                    if field_name in home_stats:
+                        val = home_stats.get(field_name)
+                        if val is not None and val != "":
+                            home_pp_opp = val
+                            break
+            if away_pp_opp is None and away_stats:
+                for field_name in ["powerPlayOpportunities", "powerPlayOpps", "ppOpportunities"]:
+                    if field_name in away_stats:
+                        val = away_stats.get(field_name)
+                        if val is not None and val != "":
+                            away_pp_opp = val
+                            break
+        
+        # If not found in team stats, try to calculate from play-by-play
+        if home_pp_opp is None or away_pp_opp is None:
+            print(f"[gateway] PP opportunities not in boxscore for game {game_id}, calculating from play-by-play")
+            print(f"[gateway] Home team keys: {list(home_team.keys())[:20]}")
+            print(f"[gateway] Away team keys: {list(away_team.keys())[:20]}")
+            calculated_home_pp_opp, calculated_away_pp_opp = await calculate_pp_opportunities_from_plays(game_id, home_team_id, away_team_id)
+            
+            if home_pp_opp is None:
+                home_pp_opp = calculated_home_pp_opp
+            if away_pp_opp is None:
+                away_pp_opp = calculated_away_pp_opp
+        else:
+            print(f"[gateway] Using PP opportunities from boxscore for game {game_id}: home={home_pp_opp}, away={away_pp_opp}")
+        
+        # Ensure we have valid integers
+        home_pp_opp = int(home_pp_opp) if home_pp_opp is not None else 0
+        away_pp_opp = int(away_pp_opp) if away_pp_opp is not None else 0
+        
+        # Calculate PP percentage (only if we have opportunities)
+        home_pp_pct = round((home_pp_goals / home_pp_opp * 100), 1) if home_pp_opp > 0 else 0.0
+        away_pp_pct = round((away_pp_goals / away_pp_opp * 100), 1) if away_pp_opp > 0 else 0.0
         
         stats = {
             "shots": {
@@ -1478,12 +1708,12 @@ async def get_player_stats(game_id: str):
                     try:
                         parts = toi_seconds.split(':')
                         toi_seconds = int(parts[0]) * 60 + int(parts[1])
-                    except:
+                    except (ValueError, IndexError):
                         toi_seconds = 0
                 else:
                     try:
                         toi_seconds = int(toi_seconds)
-                    except:
+                    except (ValueError, TypeError):
                         toi_seconds = 0
             toi_seconds = int(toi_seconds)
             toi_minutes = toi_seconds // 60
@@ -1544,15 +1774,11 @@ async def get_player_stats(game_id: str):
                     if '/' in value:
                         try:
                             return int(value.split('/')[0])
-                        except:
+                        except (ValueError, IndexError):
                             return default
-                    try:
-                        return int(value)
-                    except:
-                        return default
                 try:
                     return int(value)
-                except:
+                except (ValueError, TypeError):
                     return default
             
             saves = safe_int(player_data.get("saves"), 0)
@@ -1571,12 +1797,12 @@ async def get_player_stats(game_id: str):
                     try:
                         parts = toi_seconds.split(':')
                         toi_seconds = int(parts[0]) * 60 + int(parts[1])
-                    except:
+                    except (ValueError, IndexError):
                         toi_seconds = 0
                 else:
                     try:
                         toi_seconds = int(toi_seconds)
-                    except:
+                    except (ValueError, TypeError):
                         toi_seconds = 0
             toi_seconds = int(toi_seconds)
             toi_minutes = toi_seconds // 60
@@ -1821,7 +2047,7 @@ async def get_winprob_friendly(game_id: str):
                 }
         except HTTPException:
             raise
-        except Exception as e:
+        except Exception:
             # If we can't fetch game data, return 404
             raise HTTPException(
                 status_code=404,
@@ -2153,7 +2379,7 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                                 # Cache is fresh (< 5 seconds old), return it and refresh in background
                                 asyncio.create_task(_refresh_playbyplay_cache(game_id, r))
                                 return cached_data
-                        except:
+                        except (ValueError, TypeError):
                             # If we can't parse cache age, assume it's stale and fetch fresh
                             pass  # Will fall through to fetch fresh data
                     else:
@@ -2446,7 +2672,7 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                     elapsed_seconds = minutes * 60 + seconds
                     period_offset = (period - 1) * 1200
                     timestamp = game_start_ts + period_offset + elapsed_seconds
-                except:
+                except (ValueError, TypeError):
                     timestamp = time.time()
             else:
                 timestamp = time.time()
@@ -2655,7 +2881,6 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                     
             elif mapped_type == "PENALTY":
                 # Get penalty details
-                penalty_type = details.get("typeCode", "")  # MAJ or MIN
                 # desc_key already extracted earlier, reuse it
                 duration = details.get("duration", 0)
                 
@@ -2921,7 +3146,7 @@ async def _refresh_playbyplay_cache(game_id: str, r: Redis):
             try:
                 game_start = datetime.fromisoformat(game_start_str.replace('Z', '+00:00'))
                 game_start_ts = game_start.timestamp()
-            except:
+            except (ValueError, AttributeError):
                 pass
         
         # Event type mapping (same as get_playbyplay)
@@ -2946,27 +3171,36 @@ async def _refresh_playbyplay_cache(game_id: str, r: Redis):
             
             # Extract player IDs
             if mapped_type == "GOAL":
-                if details.get("scoringPlayerId"): player_ids.add(details.get("scoringPlayerId"))
-                if details.get("assist1PlayerId"): player_ids.add(details.get("assist1PlayerId"))
-                if details.get("assist2PlayerId"): player_ids.add(details.get("assist2PlayerId"))
+                if details.get("scoringPlayerId"):
+                    player_ids.add(details.get("scoringPlayerId"))
+                if details.get("assist1PlayerId"):
+                    player_ids.add(details.get("assist1PlayerId"))
+                if details.get("assist2PlayerId"):
+                    player_ids.add(details.get("assist2PlayerId"))
             elif mapped_type == "PENALTY":
-                if details.get("committedByPlayerId"): player_ids.add(details.get("committedByPlayerId"))
-                if details.get("drawnByPlayerId"): player_ids.add(details.get("drawnByPlayerId"))
+                if details.get("committedByPlayerId"):
+                    player_ids.add(details.get("committedByPlayerId"))
+                if details.get("drawnByPlayerId"):
+                    player_ids.add(details.get("drawnByPlayerId"))
             elif mapped_type == "SHOT":
-                if details.get("shootingPlayerId"): player_ids.add(details.get("shootingPlayerId"))
+                if details.get("shootingPlayerId"):
+                    player_ids.add(details.get("shootingPlayerId"))
             elif mapped_type == "BLOCK":
                 # For blocked shots, we need both the blocking player and the shooting player
-                if details.get("shootingPlayerId"): 
+                if details.get("shootingPlayerId"):
                     player_ids.add(details.get("shootingPlayerId"))
                 blocking_pid = details.get("playerId") or details.get("blockingPlayerId")
                 if blocking_pid:
                     player_ids.add(blocking_pid)
             elif mapped_type == "HIT":
-                if details.get("hittingPlayerId"): player_ids.add(details.get("hittingPlayerId"))
+                if details.get("hittingPlayerId"):
+                    player_ids.add(details.get("hittingPlayerId"))
             elif mapped_type == "FACEOFF":
-                if details.get("winningPlayerId"): player_ids.add(details.get("winningPlayerId"))
+                if details.get("winningPlayerId"):
+                    player_ids.add(details.get("winningPlayerId"))
             elif mapped_type in ["GIVEAWAY", "TAKEAWAY"]:
-                if details.get("playerId"): player_ids.add(details.get("playerId"))
+                if details.get("playerId"):
+                    player_ids.add(details.get("playerId"))
             
             processed_plays.append(play)
         
@@ -3033,7 +3267,7 @@ async def _refresh_playbyplay_cache(game_id: str, r: Redis):
                     elapsed_seconds = minutes * 60 + seconds
                     period_offset = (period - 1) * 1200
                     timestamp = game_start_ts + period_offset + elapsed_seconds
-                except:
+                except (ValueError, TypeError):
                     pass
             
             # Update score for goals
@@ -3561,7 +3795,7 @@ async def get_powerplay_status(game_id: str):
                         # Convert to seconds elapsed (not remaining)
                         # If time is 19:00, that's 60 seconds elapsed (20:00 - 19:00 = 1:00 = 60s)
                         return (20 * 60) - (minutes * 60 + seconds)
-                    except:
+                    except (ValueError, TypeError):
                         return 0
                 
                 penalty_elapsed = time_to_seconds(penalty_time)  # Time elapsed in period when penalty occurred
