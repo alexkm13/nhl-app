@@ -1,0 +1,17 @@
+{
+  "variants": [
+    {
+      "model_id": "lightgbm_20251104_115151_e21578a7",
+      "name": "new_model",
+      "traffic_percentage": 50,
+      "enabled": true
+    },
+    {
+      "model_id": "baseline-logit-v0",
+      "name": "baseline",
+      "traffic_percentage": 50,
+      "enabled": true
+    }
+  ]
+}
+

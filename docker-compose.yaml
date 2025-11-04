@@ -31,9 +31,19 @@ services:
     build: ./services/model_svc
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - MODEL_ID=baseline-logit-v0
+      - MODEL_ID=lightgbm_20251104_121934_d9b5b03f
+      - DATABASE_URL=postgresql://postgres:postgres@timescaledb:5432/gamecast
+      # A/B testing configuration (disabled by default)
+      # - AB_TEST_ENABLED=true
+      # - AB_TEST_CONFIG='{"variants": [{"model_id": "lightgbm_20251104_121934_d9b5b03f", "name": "improved", "traffic_percentage": 50, "enabled": true}, {"model_id": "lightgbm_20251104_115151_e21578a7", "name": "previous", "traffic_percentage": 50, "enabled": true}]}'
+    volumes:
+      # Mount training models directory so model_svc can access trained models
+      - ./services/training/models:/app/models:ro
+      - ./services/training/experiments:/app/experiments:ro
     depends_on:
       redis:
+        condition: service_healthy
+      timescaledb:
         condition: service_healthy
 
   gateway:

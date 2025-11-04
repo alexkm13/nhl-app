@@ -1,0 +1,41 @@
+{
+  "lightgbm_20251104_025931_df39f25b": {
+    "model_type": "lightgbm",
+    "timestamp": "2025-11-04T02:59:31.799959",
+    "metrics": {
+      "log_loss": 0.5652329732161772,
+      "brier_score": 0.1893843467547989,
+      "roc_auc": 0.7888162694424925,
+      "accuracy": 0.7019244682390392,
+      "calibration_error": 0.06649495873826586
+    },
+    "model_dir": "models/lightgbm_20251104_025931_df39f25b",
+    "is_active": false
+  },
+  "lightgbm_20251104_115151_e21578a7": {
+    "model_type": "lightgbm",
+    "timestamp": "2025-11-04T11:51:51.760622",
+    "metrics": {
+      "log_loss": 0.5302430685700658,
+      "brier_score": 0.18221459333579376,
+      "roc_auc": 0.7995930185161932,
+      "accuracy": 0.7163307425459975,
+      "calibration_error": 0.03600010441565479
+    },
+    "model_dir": "models/lightgbm_20251104_115151_e21578a7",
+    "is_active": true
+  },
+  "lightgbm_20251104_121934_d9b5b03f": {
+    "model_type": "lightgbm",
+    "timestamp": "2025-11-04T12:19:34.950438",
+    "metrics": {
+      "log_loss": 0.5282200853120596,
+      "brier_score": 0.18146224660718357,
+      "roc_auc": 0.800671922419372,
+      "accuracy": 0.7197997628770912,
+      "calibration_error": 0.03657857241170042
+    },
+    "model_dir": "models/lightgbm_20251104_121934_d9b5b03f",
+    "is_active": false
+  }
+}

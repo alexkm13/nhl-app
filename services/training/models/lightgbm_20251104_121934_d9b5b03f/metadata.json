@@ -1,0 +1,89 @@
+{
+  "model_id": "lightgbm_20251104_121934_d9b5b03f",
+  "model_type": "lightgbm",
+  "timestamp": "2025-11-04T12:19:34.950438",
+  "config": {
+    "train_start_date": "2024-10-01",
+    "train_end_date": "2025-03-31",
+    "test_start_date": "2025-04-01",
+    "test_end_date": "2025-10-01",
+    "features": {
+      "include_score_features": true,
+      "include_time_features": true,
+      "include_strength_features": true,
+      "include_momentum_features": true,
+      "include_stat_features": false,
+      "include_recent_events": true
+    },
+    "model": {
+      "model_type": "lightgbm",
+      "hyperparameters": {
+        "learning_rate": 0.03,
+        "num_iterations": 300,
+        "early_stopping_rounds": 25,
+        "num_leaves": 40,
+        "max_depth": 8,
+        "min_data_in_leaf": 20,
+        "reg_alpha": 0.1,
+        "reg_lambda": 1.0,
+        "min_gain_to_split": 0.02,
+        "feature_fraction": 0.85,
+        "bagging_fraction": 0.85,
+        "bagging_freq": 5,
+        "scale_pos_weight": 1.0,
+        "random_seed": 42,
+        "verbosity": -1,
+        "force_row_wise": true
+      }
+    },
+    "validation_split": 0.2,
+    "random_seed": 42,
+    "metrics": [
+      "log_loss",
+      "brier_score",
+      "roc_auc",
+      "accuracy",
+      "calibration_error"
+    ],
+    "log_level": "INFO"
+  },
+  "metrics": {
+    "log_loss": 0.5282200853120596,
+    "brier_score": 0.18146224660718357,
+    "roc_auc": 0.800671922419372,
+    "accuracy": 0.7197997628770912,
+    "calibration_error": 0.03657857241170042
+  },
+  "model_file": "experiments/experiment_20251104_121934/model.pkl",
+  "feature_columns": [
+    "seconds_elapsed",
+    "score_diff",
+    "score_diff_abs",
+    "total_goals",
+    "score_ratio",
+    "home_leading",
+    "away_leading",
+    "tied",
+    "minutes_elapsed",
+    "period",
+    "time_remaining",
+    "time_normalized",
+    "is_regulation",
+    "is_overtime",
+    "is_shootout",
+    "strength_PK",
+    "home_pp",
+    "away_pp",
+    "home_pk",
+    "away_pk",
+    "score_change_5min",
+    "recent_goals",
+    "last_event_FACEOFF",
+    "last_event_GOAL",
+    "last_event_PENALTY",
+    "last_event_SHOT",
+    "recent_goal",
+    "recent_penalty",
+    "recent_shot"
+  ]
+}

@@ -4,7 +4,39 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NHL GameCast</title>
-    <link rel="stylesheet" href="/static/styles.css?v=2">
+    <link rel="stylesheet" href="/static/styles.css?v=14">
+    <script>
+        // Aggressive cache clearing
+        (function() {
+            // Clear service workers
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.getRegistrations().then(function(registrations) {
+                    for(let registration of registrations) {
+                        registration.unregister();
+                    }
+                });
+            }
+            
+            // Clear all caches
+            if ('caches' in window) {
+                caches.keys().then(function(names) {
+                    for (let name of names) {
+                        caches.delete(name);
+                    }
+                });
+            }
+            
+            // Force reload if page is loaded from cache
+            window.addEventListener('pageshow', function(event) {
+                if (event.persisted) {
+                    window.location.reload();
+                }
+            });
+        })();
+    </script>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <script defer src="https://go.metabet.io/js/global.js"></script>
 </head>
 <body>
@@ -74,13 +106,32 @@
         // Initialize date selector
         function initDateSelector() {
             const dateSelector = document.getElementById('dateSelector');
+            if (!dateSelector) {
+                console.error('Date selector element not found');
+                return;
+            }
+            
+            // Clear any existing dates
+            dateSelector.innerHTML = '';
+            
             const today = new Date();
             const dates = [];
             
-            for (let i = -2; i <= 2; i++) {
+            // Show enough dates to fill the top bar (approximately 3 weeks: 10 days back, today, 10 days forward)
+            console.log(`[CACHE-BUST v8] Starting date generation. Today: ${today.toLocaleDateString()}`);
+            console.log(`[CACHE-BUST v8] Loop will run from -10 to +10 (21 iterations)`);
+            
+            // Create 21 dates: 10 days back, today, 10 days forward
+            for (let i = -10; i <= 10; i++) {
                 const date = new Date(today);
                 date.setDate(today.getDate() + i);
                 dates.push(date);
+                console.log(`[CACHE-BUST v8] Loop iteration ${i}: Created date ${date.toLocaleDateString()}`);
+            }
+            
+            console.log(`[CACHE-BUST v8] Total dates created: ${dates.length} (should be 21)`);
+            if (dates.length !== 21) {
+                console.error(`[CACHE-BUST v8] ERROR: Expected 21 dates but got ${dates.length}!`);
             }
 
             dates.forEach((date, index) => {
@@ -105,15 +156,36 @@
                 dateItem.onclick = () => {
                     document.querySelectorAll('.date-item').forEach(item => item.classList.remove('active'));
                     dateItem.classList.add('active');
+                    // Switch back to games list view when clicking a date
+                    showGamesList();
                     loadGamesList(date);
                 };
                 
-                if (index === 2) {
+                // Mark today as active (index 10 when range is -10 to +10)
+                if (index === 10) {
                     dateItem.classList.add('active');
                 }
                 
                 dateSelector.appendChild(dateItem);
+                console.log(`Added date ${index + 1}/${dates.length}: ${month} ${day}, ${dayName}`);
             });
+            
+            console.log(`Date selector initialized with ${dates.length} dates. Total date items in DOM: ${dateSelector.children.length}`);
+            console.log(`Date selector width: ${dateSelector.offsetWidth}px, scrollWidth: ${dateSelector.scrollWidth}px`);
+            
+            // Ensure the date selector can scroll to show all dates
+            if (dateSelector.scrollWidth > dateSelector.offsetWidth) {
+                console.log(`Date selector is scrollable (${dateSelector.scrollWidth}px > ${dateSelector.offsetWidth}px)`);
+                // Force the date selector to show all content
+                dateSelector.style.minWidth = `${dateSelector.scrollWidth}px`;
+            }
+            
+            // Verify all dates are in the DOM
+            const allDateItems = dateSelector.querySelectorAll('.date-item');
+            console.log(`Found ${allDateItems.length} date items in DOM`);
+            if (allDateItems.length !== dates.length) {
+                console.error(`Mismatch: Expected ${dates.length} dates but found ${allDateItems.length} in DOM`);
+            }
         }
 
         // Helper function to format date as YYYY-MM-DD in local time
@@ -2043,9 +2115,14 @@
                 });
                 
                 // Add current point if it's not already in the data
-                const lastPoint = points[points.length - 1];
-                if (!lastPoint || Math.abs(lastPoint.x - (width - padding.right)) > 10) {
-                    const currentProb = homeProb / 100;
+                // Check if the last point is close to the current probability
+                const lastDataPoint = interpolatedData[interpolatedData.length - 1];
+                const currentProb = homeProb / 100;
+                const shouldAddCurrentPoint = !lastDataPoint || 
+                    Math.abs(lastDataPoint.p_home_win - currentProb) > 0.01 || 
+                    Math.abs(lastDataPoint.ts - maxTime) > 30;
+                
+                if (shouldAddCurrentPoint) {
                     // Use maxTime for current point if available, otherwise use the calculated max
                     const currentX = padding.left + (maxTime - minTime) / timeRange * chartWidth;
                     const currentY = padding.top + chartHeight - (currentProb * chartHeight);
@@ -2079,26 +2156,27 @@
             const periodLength = 1200; // 20 minutes in seconds
             const periodsInGame = Math.ceil(timeRange / periodLength);
             
-            for (let i = 1; i <= periodsInGame && i <= 5; i++) {
+            // Start from 0 (origin) for 1st period, then each subsequent period
+            for (let i = 0; i <= periodsInGame && i <= 4; i++) {
                 const periodTime = i * periodLength;
                 // Only show markers if they're within the displayed time range
                 if (periodTime <= timeRange) {
                     const x = padding.left + (periodTime - minTime) / timeRange * chartWidth;
                     let label = '';
-                    if (i === 1) label = '1st';
-                    else if (i === 2) label = '2nd';
-                    else if (i === 3) label = '3rd';
-                    else if (i === 4) label = 'OT';
-                    else if (i === 5) label = 'SO';
+                    if (i === 0) label = '1st';
+                    else if (i === 1) label = '2nd';
+                    else if (i === 2) label = '3rd';
+                    else if (i === 3) label = 'OT';
+                    else if (i === 4) label = 'SO';
                     periods.push({ x, label });
                 }
             }
             
             // If no periods calculated, use default markers
             if (periods.length === 0 && timeRange > 0) {
-                periods.push({ x: padding.left + chartWidth / 3, label: '1st' });
-                periods.push({ x: padding.left + chartWidth * 2 / 3, label: '2nd' });
-                periods.push({ x: padding.left + chartWidth, label: '3rd' });
+                periods.push({ x: padding.left, label: '1st' });
+                periods.push({ x: padding.left + chartWidth / 3, label: '2nd' });
+                periods.push({ x: padding.left + chartWidth * 2 / 3, label: '3rd' });
             }
             
             // Use provided abbreviations, or fall back to first 3 letters if not provided
@@ -2126,14 +2204,14 @@
                         <!-- Y-axis labels -->
                         <text x="${padding.left - 10}" y="${padding.top + 5}" text-anchor="end" font-size="10" fill="#888">100</text>
                         <text x="${padding.left - 10}" y="${padding.top + chartHeight / 2 + 5}" text-anchor="end" font-size="10" fill="#888">50</text>
-                        <text x="${padding.left - 10}" y="${height - padding.bottom + 5}" text-anchor="end" font-size="10" fill="#888">100</text>
+                        <text x="${padding.left - 10}" y="${height - padding.bottom + 5}" text-anchor="end" font-size="10" fill="#888">0</text>
                         
                         <!-- Grid lines -->
                         <line x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${height - padding.bottom}" stroke="#333" stroke-width="1"/>
                         <line x1="${padding.left}" y1="${height - padding.bottom}" x2="${width - padding.right}" y2="${height - padding.bottom}" stroke="#333" stroke-width="1"/>
                         <line x1="${padding.left}" y1="${padding.top + chartHeight / 2}" x2="${width - padding.right}" y2="${padding.top + chartHeight / 2}" stroke="#333" stroke-width="1" stroke-dasharray="2,2"/>
                         
-                        <!-- Shaded area above line for away team probability -->
+                        <!-- Shaded area above line for away team probability (inverse of home) -->
                         <path d="${areaPath}" fill="#444" opacity="0.4"/>
                         
                         <!-- Black line for home team probability -->
@@ -2145,7 +2223,7 @@
                         <!-- Period markers -->
                         ${periods.map(p => `
                             <line x1="${p.x}" y1="${padding.top}" x2="${p.x}" y2="${height - padding.bottom}" stroke="#333" stroke-width="0.5" stroke-dasharray="2,2"/>
-                            <text x="${p.x}" y="${height - 10}" text-anchor="middle" font-size="10" fill="#888">${p.label}</text>
+                            <text x="${p.x}" y="${height - 10}" text-anchor="start" font-size="10" fill="#888">${p.label}</text>
                         `).join('')}
                     </svg>
                 </div>
@@ -2593,6 +2671,9 @@
                     </span>
                 `;
                 
+                // Goal description is already formatted with strength labels from backend
+                let goalDescription = event.description || event.event_type || 'Event';
+                
                 return `
                     <div class="playbyplay-event ${isGoal ? 'goal-event' : ''}">
                         <div class="event-player-avatar">${avatarContent}</div>
@@ -2602,7 +2683,7 @@
                                 <span>${periodTime}</span>
                             </div>
                             <div class="event-description">
-                                ${event.description || event.event_type || 'Event'}
+                                ${goalDescription}
                             </div>
                             ${event.player ? `<div class="event-player">${event.player}</div>` : (event.player_id ? `<div class="event-player">Player ${event.player_id}</div>` : '')}
                         </div>

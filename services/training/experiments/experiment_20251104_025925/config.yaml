@@ -1,0 +1,38 @@
+training:
+  train_start_date: '2022-10-01'
+  train_end_date: '2022-11-15'
+  test_start_date: '2022-11-16'
+  test_end_date: '2022-11-27'
+  features:
+    include_score_features: true
+    include_time_features: true
+    include_strength_features: true
+    include_momentum_features: true
+    include_stat_features: true
+    include_recent_events: true
+    window_size_seconds: 300
+  model_type: lightgbm
+  random_seed: 42
+  hyperparameters:
+    n_estimators: 200
+    max_depth: 6
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    min_child_weight: 3
+    reg_alpha: 0.1
+    reg_lambda: 1.0
+  validation_split: 0.2
+  early_stopping_rounds: 20
+  cv_folds: 5
+  metrics:
+  - log_loss
+  - brier_score
+  - roc_auc
+  - calibration_error
+  - accuracy
+  registry:
+    save_model: true
+    model_format: pickle
+    experiment_tracking: true
+    tracking_backend: mlflow

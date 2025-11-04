@@ -7,7 +7,7 @@ from datetime import datetime
 
 import httpx
 import psycopg
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -536,6 +536,8 @@ async def root():
         timestamp = int(time.time())
         # Replace CSS and JS references with versioned ones
         content = content.replace('/static/styles.css?v=', f'/static/styles.css?v={timestamp}&')
+        # Add cache-busting comment to force browser refresh
+        content = content.replace('</html>', f'<!-- Cache bust: {timestamp} --></html>')
         return Response(
             content=content,
             media_type="text/html",
@@ -1776,6 +1778,11 @@ async def get_player_stats(game_id: str):
                             return int(value.split('/')[0])
                         except (ValueError, IndexError):
                             return default
+                    else:
+                        try:
+                            return int(value)
+                        except (ValueError, TypeError):
+                            return default
                 try:
                     return int(value)
                 except (ValueError, TypeError):
@@ -2378,7 +2385,12 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                             else:
                                 # Cache is fresh (< 5 seconds old), return it and refresh in background
                                 asyncio.create_task(_refresh_playbyplay_cache(game_id, r))
-                                return cached_data
+                                from fastapi.responses import JSONResponse
+                                response = JSONResponse(content=cached_data)
+                                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+                                response.headers["Pragma"] = "no-cache"
+                                response.headers["Expires"] = "0"
+                                return response
                         except (ValueError, TypeError):
                             # If we can't parse cache age, assume it's stale and fetch fresh
                             pass  # Will fall through to fetch fresh data
@@ -2621,46 +2633,143 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 player_name = None
                 player_headshot = None
             
+            # Check if NHL API provides direct strength information on goal events
+            # Some NHL API implementations provide direct strength fields (e.g., "PPG", "SHG", "EVEN")
+            # Check both the play object and details object for strength information
+            strength_from_api = None
+            if mapped_type == "GOAL":
+                # Check play-level strength field
+                strength_from_api = play.get("strength") or play.get("strengthCode") or play.get("strengthState")
+                # Check details-level strength field
+                if not strength_from_api:
+                    strength_from_api = details.get("strength") or details.get("strengthCode") or details.get("strengthState")
+                # Check for powerPlay or shortHanded boolean flags
+                if not strength_from_api:
+                    is_power_play = details.get("powerPlay") or details.get("isPowerPlay")
+                    is_shorthanded = details.get("shortHanded") or details.get("isShortHanded") or details.get("shorthanded")
+                    if is_power_play:
+                        strength_from_api = "PPG"
+                    elif is_shorthanded:
+                        strength_from_api = "SHG"
+            
             # Get strength situation
-            situation = play.get("situationCode", "1551")
-            away_skaters = int(situation[1]) if len(situation) >= 2 else 5
-            home_skaters = int(situation[3]) if len(situation) >= 4 else 5
+            # situationCode format: "ABCD" where:
+            # A = away goalie (0 or 1)
+            # B = away skaters (0-6) - Position 1 = AWAY skaters
+            # C = home goalie (0 or 1)
+            # D = home skaters (0-6) - Position 3 = HOME skaters
+            # Example: "1551" = away goalie present, 5 away skaters, home goalie present, 1 home skater
+            # BUT: For 5v5, situationCode should be "1555" (both teams have 5 skaters)
+            situation = play.get("situationCode", "1555")
+            # Ensure we have at least 4 characters
+            if len(situation) >= 4:
+                try:
+                    # Standard interpretation: position 1 = away skaters, position 3 = home skaters
+                    away_skaters = int(situation[1])  # Position 1 (second character) = AWAY skaters
+                    home_skaters = int(situation[3])  # Position 3 (fourth character) = HOME skaters
+                except (ValueError, IndexError):
+                    # If parsing fails, assume even strength
+                    away_skaters = 5
+                    home_skaters = 5
+            else:
+                # Fallback: assume even strength 5v5
+                away_skaters = 5
+                home_skaters = 5
             
-            empty_net = (away_skaters == 6 or home_skaters == 6 or away_skaters == 0 or home_skaters == 0)
+            # Debug: Log situationCode parsing and check for direct strength field
+            # Log the full situationCode to help diagnose parsing issues
+            # Also log the raw character positions to see what we're actually reading
+            print(f"[gateway] DEBUG: Parsing situationCode='{situation}' -> pos[0]={situation[0] if len(situation) > 0 else 'N/A'}, pos[1]={situation[1] if len(situation) > 1 else 'N/A'}, pos[2]={situation[2] if len(situation) > 2 else 'N/A'}, pos[3]={situation[3] if len(situation) > 3 else 'N/A'} -> home_skaters={home_skaters}, away_skaters={away_skaters}, team={team}")
             
-            # Determine strength
-            if team == "HOME":
-                if empty_net:
-                    if home_skaters == 6:
-                        strength = "ENPP" if away_skaters < 5 else "EN"
-                    elif away_skaters == 6:
-                        strength = "PK"
+            # If we don't have direct strength from API, calculate from situationCode
+            if not strength_from_api or mapped_type != "GOAL":
+                # Determine if empty net (goalie pulled - 6 skaters, or goalie pulled - 0 skaters)
+                # Note: Empty net means a team has 6 skaters (goalie pulled for extra attacker)
+                # or 0 skaters (goalie pulled, but this shouldn't happen for the scoring team)
+                empty_net = (away_skaters == 6 or home_skaters == 6)
+                
+                # Determine strength from the scoring team's perspective
+                # Power play = scoring team has MORE skaters than opponent (advantage)
+                # Shorthanded = scoring team has FEWER skaters than opponent (< 5 skaters)
+                # Even strength = both teams have 5 skaters
+                # 
+                # Important: Only label as PP/SH if there's a clear advantage/disadvantage
+                # Don't label as PP/SH if it's just an empty net situation (6v5)
+                if team == "HOME":
+                    if empty_net:
+                        if home_skaters == 6:
+                            # Home has empty net (6 skaters, goalie pulled)
+                            # This is an empty net goal, label as PP only if opponent is shorthanded
+                            strength = "ENPP" if away_skaters < 5 else "EN"
+                        elif away_skaters == 6:
+                            # Away has empty net (6 skaters, goalie pulled)
+                            # Home is defending against empty net - this is a defensive situation
+                            strength = "PK"
+                        else:
+                            strength = "EV"
+                    elif home_skaters == 5 and away_skaters == 5:
+                        strength = "EV"
+                    elif home_skaters > away_skaters:
+                        # Home has more skaters = power play for home
+                        # This is a power play situation (e.g., 5v4, 5v3, 4v3)
+                        # But check: if home > away and both are reasonable (3-5), it's a power play
+                        if home_skaters >= 3 and away_skaters >= 3:  # Valid power play range (3v3 to 5v4)
+                            strength = "PP"
+                        else:
+                            # Invalid situation (e.g., 5v1, 5v2) - assume even strength
+                            strength = "EV"
+                    elif home_skaters < away_skaters:
+                        # Home has fewer skaters = shorthanded for home
+                        # Only if home_skaters < 5 (actually shorthanded, not just 5v6 empty net)
+                        if home_skaters < 5 and away_skaters <= 5 and home_skaters >= 3:  # Valid shorthanded range (3v5 to 4v5)
+                            strength = "SH"
+                        else:
+                            # Invalid situation (e.g., 1v5, 2v5) - assume even strength
+                            strength = "EV"
                     else:
-                        strength = "PK"
-                elif home_skaters == 5 and away_skaters == 5:
-                    strength = "EV"
-                elif home_skaters > away_skaters:
-                    strength = "PP"
-                elif home_skaters < away_skaters:
-                    strength = "SH" if home_skaters < 5 else "PK"
-                else:
-                    strength = "EV"
-            else:  # AWAY
-                if empty_net:
-                    if away_skaters == 6:
-                        strength = "ENPP" if home_skaters < 5 else "EN"
-                    elif home_skaters == 6:
-                        strength = "PK"
+                        strength = "EV"
+                else:  # AWAY team scored
+                    if empty_net:
+                        if away_skaters == 6:
+                            # Away has empty net (6 skaters, goalie pulled)
+                            # This is an empty net goal, label as PP only if opponent is shorthanded
+                            strength = "ENPP" if home_skaters < 5 else "EN"
+                        elif home_skaters == 6:
+                            # Home has empty net (6 skaters, goalie pulled)
+                            # Away is defending against empty net - this is a defensive situation
+                            strength = "PK"
+                        else:
+                            strength = "EV"
+                    elif away_skaters == 5 and home_skaters == 5:
+                        strength = "EV"
+                    elif away_skaters > home_skaters:
+                        # Away has more skaters = power play for away
+                        # This is a power play situation (e.g., 5v4, 5v3, 4v3)
+                        # But check: if away > home and both are reasonable (3-5), it's a power play
+                        if away_skaters >= 3 and home_skaters >= 3:  # Valid power play range (3v3 to 5v4)
+                            strength = "PP"
+                            # Debug: Log power play detection for away team
+                            print(f"[gateway] DEBUG: AWAY power play detected - away_skaters={away_skaters}, home_skaters={home_skaters}, strength={strength}")
+                        else:
+                            # Invalid situation (e.g., 5v1, 5v2) - assume even strength
+                            strength = "EV"
+                    elif away_skaters < home_skaters:
+                        # Away has fewer skaters = shorthanded for away
+                        # Only if away_skaters < 5 (actually shorthanded, not just 5v6 empty net)
+                        if away_skaters < 5 and home_skaters <= 5 and away_skaters >= 3:  # Valid shorthanded range (3v5 to 4v5)
+                            strength = "SH"
+                            # Debug: Log shorthanded detection for away team
+                            print(f"[gateway] DEBUG: AWAY shorthanded detected - away_skaters={away_skaters}, home_skaters={home_skaters}, strength={strength}")
+                        else:
+                            # Invalid situation (e.g., 1v5, 2v5) - assume even strength
+                            strength = "EV"
                     else:
-                        strength = "PK"
-                elif away_skaters == 5 and home_skaters == 5:
-                    strength = "EV"
-                elif away_skaters > home_skaters:
-                    strength = "PP"
-                elif away_skaters < home_skaters:
-                    strength = "SH" if away_skaters < 5 else "PK"
-                else:
-                    strength = "EV"
+                        # away_skaters == home_skaters but not 5v5 (shouldn't happen in non-empty-net)
+                        strength = "EV"
+            else:
+                # If we have strength from API, use it (already set above)
+                # But we still need to set empty_net for other logic
+                empty_net = (away_skaters == 6 or home_skaters == 6)
             
             # Calculate timestamp
             time_in_period = play.get("timeInPeriod", "00:00")
@@ -2771,35 +2880,54 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 distance = None
                 
                 if x_coord is not None and y_coord is not None:
-                    # NHL API uses a coordinate system where:
-                    # - x ranges from 0 to 200 (one goal to the other)
-                    # - Goals are at x=0 and x=200
-                    # - Center ice is at x=100
-                    # Determine which goal based on shot location
-                    # If shot is in left half (x < 100), it's going towards goal at x=0
-                    # If shot is in right half (x > 100), it's going towards goal at x=200
+                    # Determine which goal based on which team scored and which side they're attacking
+                    # The NHL API coordinate system appears to be relative to the attacking team's perspective
+                    # We need to use homeTeamDefendingSide to determine which goal to measure to
                     
-                    # Handle both coordinate systems:
-                    # - 0-200 system: goals at 0 and 200, center at 100
-                    # - -100 to 100 system: goals at -89 and 89, center at 0
+                    # Get which side the home team is defending (tells us which end each team attacks)
+                    home_defending_side = play.get("homeTeamDefendingSide", "")
+                    
+                    # NHL coordinate system explanation:
+                    # - The coordinate system might be relative to the attacking team's perspective
+                    # - Or it might be fixed with x=0 at one end and x=200 at the other
+                    # - We need to determine which goal the scoring team is attacking
                     
                     if x_coord < 0:
-                        # Negative coordinates: -100 to 100 system
+                        # Negative coordinates: -100 to 100 system (alternative coordinate system)
                         # Determine goal based on which side of center (x=0)
-                        # If x < 0, shot is going towards goal at x=-89
-                        # If x > 0 (but we're in negative block, so this won't happen), goal at x=89
-                        goal_x = -89  # Goal in negative x direction
+                        if x_coord < 0:
+                            goal_x = -89  # Goal in negative x direction
+                        else:
+                            goal_x = 89   # Goal in positive x direction
                     elif x_coord <= 200:
                         # 0-200 coordinate system (most common)
-                        if x_coord <= 100:
-                            # Shot is in left half, going towards goal at x=0
-                            goal_x = 0
+                        # Use homeTeamDefendingSide to determine which goal the scoring team attacks
+                        # If home team defends "right", away team attacks "right" (goal at x=200)
+                        # If home team defends "left", home team attacks "left" (goal at x=0)
+                        
+                        if home_defending_side == "right":
+                            # Home defends right, away attacks right (x > 100 area)
+                            # Home attacks left (x < 100 area)
+                            if team == "HOME":
+                                goal_x = 0  # Home attacks left goal
+                            else:
+                                goal_x = 200  # Away attacks right goal
+                        elif home_defending_side == "left":
+                            # Home defends left, home attacks left (x < 100 area)
+                            # Away attacks right (x > 100 area)
+                            if team == "HOME":
+                                goal_x = 0  # Home attacks left goal
+                            else:
+                                goal_x = 200  # Away attacks right goal
                         else:
-                            # Shot is in right half, going towards goal at x=200
-                            goal_x = 200
+                            # Fallback: use coordinate position if defending side not available
+                            if x_coord <= 100:
+                                goal_x = 0
+                            else:
+                                goal_x = 200
                     else:
-                        # Coordinates outside expected range, use center-relative system
-                        # Goals at -89 and 89
+                        # Coordinates outside expected range (> 200)
+                        # Fallback logic
                         if x_coord < 100:
                             goal_x = 89
                         else:
@@ -2845,12 +2973,36 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 }
                 shot_desc = shot_type_map.get(shot_type, shot_type + " shot" if shot_type else "shot")
                 
-                # Build goal description with distance
-                # Format: "7' Go-Ahead Slap Shot Goal"
+                # Add strength label (power play or shorthanded) before shot type
+                # Only label as power play if the scoring team is on the power play (PP or ENPP)
+                # PK means penalty kill (defensive situation, not power play goal)
+                # SH means shorthanded (offensive goal while penalty killing)
+                strength_label = ""
+                if strength == "PP" or strength == "ENPP":
+                    strength_label = "power play "
+                elif strength == "SH":
+                    strength_label = "shorthanded "
+                
+                # Debug: Log all goal strengths to verify they're being set correctly
+                # Log detailed information to help diagnose power play/short-handed detection issues
+                # This will help identify if power play goals are being missed
+                print(f"[gateway] DEBUG: Goal - team={team}, situationCode={situation}, home_skaters={home_skaters}, away_skaters={away_skaters}, strength={strength}, strength_label='{strength_label}', empty_net={empty_net}, event_desc='{event_desc[:100] if 'event_desc' in locals() else 'N/A'}...'")
+                
+                # Build goal description in lowercase format: "15' go-ahead power play snap shot goal"
+                # game_situation is already lowercase (e.g., "go-ahead ", "game-tying ", "insurance ")
+                # strength_label is already lowercase (e.g., "power play ", "shorthanded ", or "")
+                # shot_desc needs to be lowercase
+                shot_desc_lower = shot_desc.lower()
+                
                 if distance is not None:
-                    event_desc = f"{distance}' {game_situation}{shot_desc} goal"
+                    event_desc = f"{distance}' {game_situation}{strength_label}{shot_desc_lower} goal"
                 else:
-                    event_desc = f"{game_situation}{shot_desc} goal"
+                    event_desc = f"{game_situation}{strength_label}{shot_desc_lower} goal"
+                
+                # Debug: Log all goal strengths to verify they're being set correctly
+                # Log detailed information to help diagnose power play/short-handed detection issues
+                # This will help identify if power play goals are being missed
+                print(f"[gateway] DEBUG: Goal - team={team}, situationCode={situation}, home_skaters={home_skaters}, away_skaters={away_skaters}, strength={strength}, strength_label='{strength_label}', empty_net={empty_net}, event_desc='{event_desc[:80]}...'")
                 
                 # Add assists if available
                 assists = []
@@ -2863,21 +3015,7 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                     assist_text = ", ".join(assists)
                     event_desc += f" (assists: {assist_text})"
                 
-                # Capitalize the description but preserve player names exactly as they come from the NHL API
-                # Extract the assist names from the description first, then capitalize the rest
-                # Player names are already properly capitalized from the NHL API, so we don't want to modify them
-                # Only capitalize the description text parts, not the names in parentheses
-                if " (assists: " in event_desc:
-                    # Split description into main part and assists part
-                    main_desc, assists_part = event_desc.split(" (assists: ", 1)
-                    assists_part = assists_part.rstrip(")")  # Remove closing parenthesis
-                    # Capitalize only the main description (not player names)
-                    main_desc = " ".join(word.capitalize() for word in main_desc.split())
-                    # Reconstruct with assists part unchanged (names already properly capitalized)
-                    event_desc = f"{main_desc} (assists: {assists_part})"
-                else:
-                    # No assists, just capitalize the description
-                    event_desc = " ".join(word.capitalize() for word in event_desc.split())
+                # Description is already in lowercase format - no capitalization needed
                     
             elif mapped_type == "PENALTY":
                 # Get penalty details
@@ -3095,6 +3233,13 @@ async def get_playbyplay(game_id: str, limit: int = 30):
             "game_state": game_data.get("gameState", "")
         }
         
+        # Return with cache-busting headers
+        from fastapi.responses import JSONResponse
+        response = JSONResponse(content=result)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        
         # Cache the result (1 hour for completed games, 10 seconds for live games)
         cache_key = f"playbyplay:{game_id}"
         if r:
@@ -3106,7 +3251,7 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 cache_age_key = f"playbyplay_cache_age:{game_id}"
                 await r.setex(cache_age_key, 10, str(time.time()))
         
-        return result
+        return response
     except HTTPException:
         raise
     except Exception as e:
@@ -3187,7 +3332,7 @@ async def _refresh_playbyplay_cache(game_id: str, r: Redis):
                     player_ids.add(details.get("shootingPlayerId"))
             elif mapped_type == "BLOCK":
                 # For blocked shots, we need both the blocking player and the shooting player
-                if details.get("shootingPlayerId"):
+                if details.get("shootingPlayerId"): 
                     player_ids.add(details.get("shootingPlayerId"))
                 blocking_pid = details.get("playerId") or details.get("blockingPlayerId")
                 if blocking_pid:
@@ -3415,11 +3560,22 @@ async def _refresh_playbyplay_cache(game_id: str, r: Redis):
                 }
                 shot_desc = shot_type_map.get(shot_type, shot_type + " shot" if shot_type else "shot")
                 
-                # Build goal description with distance
+                # Add strength label (power play or shorthanded) before shot type
+                # Only label as power play if the scoring team is on the power play (PP or ENPP)
+                # PK means penalty kill (defensive situation, not power play goal)
+                # SH means shorthanded (offensive goal while penalty killing)
+                strength_label = ""
+                if strength == "PP" or strength == "ENPP":
+                    strength_label = "power play "
+                elif strength == "SH":
+                    strength_label = "shorthanded "
+                
+                # Build goal description in lowercase format: "15' go-ahead power play snap shot goal"
+                shot_desc_lower = shot_desc.lower()
                 if distance is not None:
-                    event_desc = f"{distance}' {game_situation}{shot_desc} goal"
+                    event_desc = f"{distance}' {game_situation}{strength_label}{shot_desc_lower} goal"
                 else:
-                    event_desc = f"{game_situation}{shot_desc} goal"
+                    event_desc = f"{game_situation}{strength_label}{shot_desc_lower} goal"
                 
                 # Get assist player IDs for goals
                 assist1_player_id = details.get("assist1PlayerId")
@@ -3438,14 +3594,8 @@ async def _refresh_playbyplay_cache(game_id: str, r: Redis):
                     assist_text = ", ".join(assists)
                     event_desc += f" (assists: {assist_text})"
                 
-                # Capitalize the description but preserve player names
-                if " (assists: " in event_desc:
-                    main_desc, assists_part = event_desc.split(" (assists: ", 1)
-                    assists_part = assists_part.rstrip(")")
-                    main_desc = " ".join(word.capitalize() for word in main_desc.split())
-                    event_desc = f"{main_desc} (assists: {assists_part})"
-                else:
-                    event_desc = " ".join(word.capitalize() for word in event_desc.split())
+                # Description is already in lowercase format - no capitalization needed
+                # Player names in assists are already properly capitalized from the API
                     
             elif mapped_type == "PENALTY":
                 # Get penalty details
