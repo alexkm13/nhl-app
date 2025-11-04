@@ -180,8 +180,18 @@ async def produce_nhl_game(r: Redis, game_id: str):
         elif event_owner_id == away_team_id:
             team = "AWAY"
         else:
-            # Fallback to defending side if eventOwnerTeamId not available
-            team = "HOME" if play.get("homeTeamDefendingSide") == "right" else "AWAY"
+            # For goals, never use defending side fallback (defending team is the one that got scored on)
+            # Goals are crucial events and should always have eventOwnerTeamId
+            if mapped_type == "GOAL":
+                # For goals, try to use scoringPlayerId to determine team if available
+                # But for now, log an error and use a safer fallback
+                print(f"[ingestor] WARNING: Goal missing eventOwnerTeamId for game {game_id}, using scoring team logic")
+                # Use the scoring team - if homeTeamDefendingSide is "right", 
+                # home is defending, so away scored (opposite of defending)
+                team = "AWAY" if play.get("homeTeamDefendingSide") == "right" else "HOME"
+            else:
+                # For non-crucial events, fallback to defending side if eventOwnerTeamId not available
+                team = "HOME" if play.get("homeTeamDefendingSide") == "right" else "AWAY"
         
         # Get situation/strength from NHL API situationCode
         # Format: ABCD where B=away_skaters, D=home_skaters

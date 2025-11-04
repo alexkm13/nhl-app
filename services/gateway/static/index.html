@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NHL GameCast</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=2">
+    <script defer src="https://go.metabet.io/js/global.js"></script>
 </head>
 <body>
     <div class="header">
@@ -19,10 +20,18 @@
     <div id="loading" class="spinner" style="display: none;"></div>
 
     <div class="main-container">
-        <div class="section">
-            <div class="section-header games">Games</div>
-            <div class="games-list" id="gamesList">
-                <div class="spinner"></div>
+        <div class="main-content-wrapper">
+            <div class="games-column">
+                <div class="section-header games">Games</div>
+                <div class="games-list" id="gamesList">
+                    <div class="spinner"></div>
+                </div>
+            </div>
+            <div class="standings-column">
+                <div class="section-header">Standings</div>
+                <div class="standings-container" id="standingsContainer">
+                    <div class="spinner"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -36,6 +45,31 @@
 
     <script>
         const API_BASE = window.location.origin || 'http://localhost:8000';
+        
+        // Store polling interval for play-by-play updates
+        let playByPlayPollInterval = null;
+        let goalCheckPollInterval = null; // Fast polling for goal detection
+        let liveScorePollInterval = null;
+        let powerPlayPollInterval = null; // Polling for power play status
+        let gamesListPollInterval = null; // Polling for games list updates
+        let currentGameId = null;
+        let currentGameIsLive = false;
+        let currentHomeTeam = '';
+        let currentAwayTeam = '';
+        let currentHomeLogo = '';
+        let currentAwayLogo = '';
+        let lastEventCount = 0; // Track number of events to detect new goals
+        let lastGoalCount = 0; // Track goal count to detect new goals
+        
+        // Cache for game data to enable instant loading
+        let gameDataCache = {};
+        
+        // Store basic game info from games list for instant display
+        let gamesListData = {}; // Map of gameId -> basic game info from games list
+        
+        // Track all live games and their polling intervals
+        let liveGamesPolling = {}; // Map of gameId -> { interval, goalCheckInterval, gameData }
+        let liveGamesFeedCache = {}; // Map of gameId -> { events, homeTeam, awayTeam, homeLogo, awayLogo, isLive }
 
         // Initialize date selector
         function initDateSelector() {
@@ -82,22 +116,68 @@
             });
         }
 
+        // Helper function to format date as YYYY-MM-DD in local time
+        function formatDateLocal(date) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+
         // Load games list
         async function loadGamesList(date = null) {
             const gamesList = document.getElementById('gamesList');
             gamesList.innerHTML = '<div class="spinner"></div>';
 
             try {
-                let url = `${API_BASE}/v1/games`;
-                if (date) {
-                    const dateStr = date.toISOString().split('T')[0];
-                    url += `?date=${dateStr}`;
+                // Always use a date - default to today if not provided
+                if (!date) {
+                    date = new Date();
                 }
+                const dateStr = formatDateLocal(date);
+                const url = `${API_BASE}/v1/games?date=${dateStr}`;
 
                 const response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
                 const data = await response.json();
 
-                if (response.ok && data.games && data.games.length > 0) {
+                if (data.games && data.games.length > 0) {
+                    // Store basic game info for instant display
+                    data.games.forEach(game => {
+                        gamesListData[game.game_id] = {
+                            game_id: game.game_id,
+                            home_team_name: game.home_team_name || game.home_team,
+                            away_team_name: game.away_team_name || game.away_team,
+                            home_team: game.home_team || '', // Abbreviation from API
+                            away_team: game.away_team || '', // Abbreviation from API
+                            home_team_logo: game.home_team_logo || '',
+                            away_team_logo: game.away_team_logo || '',
+                            home_score: game.home_score || 0,
+                            away_score: game.away_score || 0,
+                            game_state: game.game_state,
+                            period: game.period,
+                            time_in_period: game.time_in_period,
+                            overtime_type: game.overtime_type || null, // OT, SO, or null
+                            is_live: game.game_state === 'LIVE' || game.game_state === 'CRIT'
+                        };
+                    });
+                    
+                    // Prefetch game data for instant loading
+                    prefetchGameData(data.games.map(g => g.game_id));
+                    
+                    // Check if there are any live games - if so, start polling
+                    const hasLiveGames = data.games.some(g => g.game_state === 'LIVE' || g.game_state === 'CRIT');
+                    if (hasLiveGames) {
+                        startGamesListPolling(date);
+                        // Start/update polling for all live games
+                        updateLiveGameFeedPolling(data.games);
+                    } else {
+                        stopGamesListPolling();
+                        stopAllLiveGameFeedPolling();
+                    }
+                    
                     gamesList.innerHTML = data.games.map(game => {
                         const isFinal = game.game_state === 'OFF' || game.game_state === 'FINAL';
                         const homeScore = game.home_score || 0;
@@ -115,26 +195,29 @@
                         }
                         
                         // Determine winner/loser for final games
+                        // Top team = Away team, Bottom team = Home team
                         if (isFinal && !isTie) {
-                            const winnerRow = homeIsWinner ?
+                            // Away team row (always on top)
+                            const awayRow = awayIsWinner ?
                                 `<div class="game-score-row winner">
                                     <div class="game-winner-indicator">▶</div>
-                                    <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-team-logo" onerror="this.style.display='none'">
-                                    <div class="game-team-name">${game.home_team_name || game.home_team}</div>
-                                    <div class="game-team-score">${homeScore}</div>
+                                    <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="game-team-logo" onerror="this.style.display='none'">
+                                    <div class="game-team-name">${game.away_team_name || game.away_team}</div>
+                                    <div class="game-team-score">${awayScore}</div>
                                 </div>` :
-                                `<div class="game-score-row winner">
-                                    <div class="game-winner-indicator">▶</div>
+                                `<div class="game-score-row loser">
                                     <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="game-team-logo" onerror="this.style.display='none'">
                                     <div class="game-team-name">${game.away_team_name || game.away_team}</div>
                                     <div class="game-team-score">${awayScore}</div>
                                 </div>`;
                             
-                            const loserRow = homeIsWinner ?
-                                `<div class="game-score-row loser">
-                                    <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="game-team-logo" onerror="this.style.display='none'">
-                                    <div class="game-team-name">${game.away_team_name || game.away_team}</div>
-                                    <div class="game-team-score">${awayScore}</div>
+                            // Home team row (always on bottom)
+                            const homeRow = homeIsWinner ?
+                                `<div class="game-score-row winner">
+                                    <div class="game-winner-indicator">▶</div>
+                                    <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-team-logo" onerror="this.style.display='none'">
+                                    <div class="game-team-name">${game.home_team_name || game.home_team}</div>
+                                    <div class="game-team-score">${homeScore}</div>
                                 </div>` :
                                 `<div class="game-score-row loser">
                                     <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-team-logo" onerror="this.style.display='none'">
@@ -148,8 +231,8 @@
                                         <span class="game-status-text">${finalStatusText}</span>
                                     </div>
                                     <div class="game-score-teams">
-                                        ${loserRow}
-                                        ${winnerRow}
+                                        ${awayRow}
+                                        ${homeRow}
                                     </div>
                                 </div>
                             `;
@@ -157,9 +240,66 @@
                             // Live or future game - show live format
                             const isLive = game.game_state === 'LIVE' || game.game_state === 'CRIT';
                             
-                            // Convert UTC time to local time
+                            // For live games, show period and time remaining. Otherwise, show scheduled start time
                             let gameTimeDisplay = 'TBD';
-                            if (game.start_time_utc) {
+                            let periodDisplay = '';
+                            if (isLive) {
+                                // For live games, always try to show period and time remaining
+                                const period = game.period || game.periodDescriptor?.number || null;
+                                const timeInPeriod = game.time_in_period || game.timeInPeriod || null;
+                                
+                                if (period && timeInPeriod) {
+                                    // Format period: "1st", "2nd", "3rd", "OT", etc.
+                                    let periodLabel;
+                                    if (period === 1) {
+                                        periodLabel = '1st';
+                                    } else if (period === 2) {
+                                        periodLabel = '2nd';
+                                    } else if (period === 3) {
+                                        periodLabel = '3rd';
+                                    } else if (period === 4) {
+                                        periodLabel = 'OT';
+                                    } else {
+                                        periodLabel = `${period}th`;
+                                    }
+                                    
+                                    // Convert time based on source
+                                    // If is_time_remaining is true, timeInPeriod is already time remaining
+                                    // If false or undefined, timeInPeriod is elapsed time and needs conversion
+                                    const isTimeRemaining = game.is_time_remaining === true;
+                                    let formattedTime;
+                                    if (timeInPeriod && timeInPeriod !== '00:00') {
+                                        if (isTimeRemaining) {
+                                            // Already time remaining, use directly
+                                            const [minutes, seconds] = timeInPeriod.split(':').map(Number);
+                                            formattedTime = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+                                        } else {
+                                            // Convert elapsed time to remaining
+                                            const [elapsedMinutes, elapsedSeconds] = timeInPeriod.split(':').map(Number);
+                                            const elapsedTotalSeconds = elapsedMinutes * 60 + elapsedSeconds;
+                                            
+                                            // Determine period length: 20 minutes (1200 seconds) for regulation, 5 minutes (300 seconds) for OT
+                                            const periodLengthSeconds = (period <= 3) ? 1200 : 300;
+                                            const remainingTotalSeconds = Math.max(0, periodLengthSeconds - elapsedTotalSeconds);
+                                            
+                                            const remainingMinutes = Math.floor(remainingTotalSeconds / 60);
+                                            const remainingSecs = remainingTotalSeconds % 60;
+                                            formattedTime = `${remainingMinutes}:${remainingSecs.toString().padStart(2, '0')}`;
+                                        }
+                                    } else {
+                                        // If time is 00:00, show full period time remaining
+                                        formattedTime = (period <= 3) ? '20:00' : '5:00';
+                                    }
+                                    
+                                    // Separate time and period for display
+                                    gameTimeDisplay = formattedTime;
+                                    periodDisplay = periodLabel;
+                                } else {
+                                    // If period/time data is missing, show default time remaining
+                                    gameTimeDisplay = '20:00';
+                                    periodDisplay = '1st';
+                                }
+                            } else if (game.start_time_utc) {
                                 try {
                                     const utcDate = new Date(game.start_time_utc);
                                     const localTime = utcDate.toLocaleTimeString('en-US', {
@@ -173,25 +313,34 @@
                                 }
                             }
                             
+                            // Only show records for games that haven't started
+                            const showRecords = !isLive;
+                            const awayRecord = showRecords && game.away_team_record ? `<div class="game-team-record">${game.away_team_record}</div>` : '';
+                            const homeRecord = showRecords && game.home_team_record ? `<div class="game-team-record">${game.home_team_record}</div>` : '';
+                            
                             return `
-                                <div class="game-card" onclick="selectGame('${game.game_id}')">
+                                <div class="game-card ${isLive ? 'live' : ''}" onclick="selectGame('${game.game_id}')">
                                     <div class="game-live-score">
                                         <div class="game-live-team-left">
                                             <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="game-live-logo" onerror="this.style.display='none'">
                                             <div class="game-live-score-num">${awayScore}</div>
                                             <div class="game-live-team-name">${game.away_team_name || game.away_team}</div>
+                                            ${awayRecord}
                                         </div>
                                         <div class="game-live-time-container">
                                             ${isLive ? '<div class="game-live-indicator"></div>' : ''}
                                             <div class="game-live-time">${gameTimeDisplay}</div>
-                                            ${game.spread !== null && game.spread !== undefined ? 
-                                                `<div class="game-spread">${game.spread_favorite === 'home' ? game.home_team_name : game.away_team_name} ${game.spread > 0 ? '+' : ''}${game.spread}</div>` : 
-                                                '<div class="game-spread">N/A</div>'}
+                                            ${isLive ? 
+                                                `<div class="game-spread">${periodDisplay}</div>` :
+                                                (game.spread !== null && game.spread !== undefined ? 
+                                                    `<div class="game-spread">${game.spread_favorite === 'home' ? game.home_team_name : game.away_team_name} ${game.spread > 0 ? '+' : ''}${game.spread}</div>` : 
+                                                    '<div class="game-spread">N/A</div>')}
                                         </div>
                                         <div class="game-live-team-right">
                                             <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-live-logo" onerror="this.style.display='none'">
                                             <div class="game-live-score-num">${homeScore}</div>
                                             <div class="game-live-team-name">${game.home_team_name || game.home_team}</div>
+                                            ${homeRecord}
                                         </div>
                                     </div>
                                 </div>
@@ -207,38 +356,316 @@
             }
         }
 
-        async function selectGame(gameId) {
-            // Hide games list and show loading
-            showGameDetails();
-            const loading = document.getElementById('loading');
-            loading.style.display = 'block';
-            showStatus('Loading game...', 'info');
-            
-            // Try to fetch results directly first
-            try {
-                const response = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`);
-                const data = await response.json();
-                
-                if (response.ok) {
-                    displayResults(data);
-                    loading.style.display = 'none';
-                    showStatus('Game loaded successfully!', 'success');
-                    return;
+        // Prefetch game data for all games on current date
+        async function prefetchGameData(gameIds) {
+            // Prefetch in parallel for all games - both win probability and play-by-play
+            const prefetchPromises = gameIds.map(async (gameId) => {
+                try {
+                    // Prefetch win probability
+                    const winprobResponse = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`);
+                    if (winprobResponse.ok) {
+                        const data = await winprobResponse.json();
+                        gameDataCache[gameId] = data;
+                    }
+                    
+                    // Prefetch play-by-play data (this will populate Redis cache)
+                    // Don't await - just fire and forget to populate cache
+                    fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=50`).catch(() => {});
+                } catch (error) {
+                    // Silently fail - we'll fetch on demand if needed
                 }
-            } catch (error) {
-                // If fetch fails, start ingestion
-                console.log('Game data not available, starting ingestion...');
+            });
+            // Don't await - let it run in background
+            Promise.all(prefetchPromises).catch(() => {});
+        }
+        
+        async function selectGame(gameId) {
+            // Hide games list immediately
+            showGameDetails();
+            
+            // Show cached data immediately for instant display
+            if (gameDataCache[gameId]) {
+                displayResults(gameDataCache[gameId]);
+                // Fetch fresh data in background (non-blocking)
+                fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`)
+                    .then(response => {
+                        if (response.ok) {
+                            return response.json();
+                        }
+                        return null;
+                    })
+                    .then(data => {
+                        if (data) {
+                            gameDataCache[gameId] = data; // Update cache
+                            // Update display if still viewing this game
+                            if (currentGameId === gameId) {
+                                displayResults(data);
+                            }
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error refreshing game data:', error);
+                    });
+                return; // Return immediately after showing cached data
             }
             
-            // If results aren't available, start ingestion
-            await startIngestionForGame(gameId);
+            // No cache - show basic info immediately if available from games list, then fetch full data
+            const basicInfo = gamesListData[gameId];
+            if (basicInfo) {
+                // Show basic game info immediately for instant display
+                showBasicGameInfo(gameId, basicInfo);
+                // Fetch full data in background (non-blocking)
+                fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`)
+                    .then(response => {
+                        if (response.ok) {
+                            return response.json();
+                        }
+                        return null;
+                    })
+                    .then(data => {
+                        if (data) {
+                            gameDataCache[gameId] = data; // Cache it
+                            // Update display if still viewing this game
+                            if (currentGameId === gameId) {
+                                displayResults(data);
+                            }
+                        }
+                    })
+                    .catch(error => {
+                        // Silently handle network errors - don't spam console
+                        // Only log if it's a non-network error
+                        if (error.name !== 'TypeError' || !error.message.includes('fetch')) {
+                            console.error('Error fetching game data:', error);
+                        }
+                        // If fetch fails, start ingestion (but don't block feed loading)
+                        if (currentGameId === gameId) {
+                            startIngestionForGame(gameId).catch(() => {
+                                // Silently fail - feed should still work
+                            });
+                        }
+                    });
+                return; // Return immediately after showing basic info
+            }
+            
+            // No basic info either - show loading state and fetch
+            const gameDetails = document.getElementById('gameDetails');
+            const placeholder = document.getElementById('game-content-placeholder');
+            if (placeholder) {
+                placeholder.innerHTML = '<div class="spinner"></div><div style="text-align: center; color: #aaaaaa; margin-top: 20px;">Loading game...</div>';
+            }
+            
+            // Fetch fresh data (non-blocking)
+            fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`)
+                .then(response => {
+                    if (response.ok) {
+                        return response.json();
+                    }
+                    return null;
+                })
+                .then(data => {
+                    if (data) {
+                        gameDataCache[gameId] = data; // Cache it
+                        if (currentGameId === gameId) {
+                            displayResults(data);
+                        }
+                    } else {
+                        // If fetch fails, start ingestion
+                        if (currentGameId === gameId) {
+                            startIngestionForGame(gameId).catch(err => {
+                                console.error('Error starting ingestion:', err);
+                            });
+                        }
+                    }
+                })
+                .catch(error => {
+                    // Silently handle network errors - don't spam console
+                    // Only log if it's a non-network error
+                    if (error.name !== 'TypeError' || !error.message.includes('fetch')) {
+                        console.error('Error fetching game data:', error);
+                    }
+                    // If fetch fails, start ingestion (but don't block feed loading)
+                    if (currentGameId === gameId) {
+                        startIngestionForGame(gameId).catch(() => {
+                            // Silently fail - feed should still work
+                        });
+                    }
+                });
+        }
+        
+        // Show basic game info immediately while fetching full data
+        function showBasicGameInfo(gameId, basicInfo) {
+            const homeTeam = basicInfo.home_team_name || 'Home';
+            const awayTeam = basicInfo.away_team_name || 'Away';
+            const homeLogo = basicInfo.home_team_logo || '';
+            const awayLogo = basicInfo.away_team_logo || '';
+            const homeScore = basicInfo.home_score || 0;
+            const awayScore = basicInfo.away_score || 0;
+            const isLive = basicInfo.is_live || false;
+            const gameState = basicInfo.game_state || '';
+            const isFinal = gameState === 'OFF' || gameState === 'FINAL';
+            const period = basicInfo.period || 1;
+            const timeInPeriod = basicInfo.time_in_period || '00:00';
+            const overtimeType = basicInfo.overtime_type || null;
+            
+            // Format time and period for live games, or final status for finished games
+            let timeDisplay = '';
+            let periodDisplay = '';
+            let statusDisplay = '';
+            
+            if (isFinal) {
+                // For finished games, show "Final", "Final/OT", or "Final/SO"
+                if (overtimeType === 'OT') {
+                    statusDisplay = 'Final/OT';
+                } else if (overtimeType === 'SO') {
+                    statusDisplay = 'Final/SO';
+                } else {
+                    statusDisplay = 'Final';
+                }
+                // For final games, hide time and period, show final status instead
+                timeDisplay = '';
+                periodDisplay = '';
+            } else {
+                // Convert time elapsed to time remaining
+                // timeInPeriod is elapsed time in MM:SS format (e.g., "00:30" = 30 seconds elapsed)
+                // We need to convert to time remaining
+                if (timeInPeriod && timeInPeriod !== '00:00') {
+                    const [elapsedMinutes, elapsedSeconds] = timeInPeriod.split(':').map(Number);
+                    const elapsedTotalSeconds = elapsedMinutes * 60 + elapsedSeconds;
+                    
+                    // Determine period length: 20 minutes (1200 seconds) for regulation, 5 minutes (300 seconds) for OT
+                    const periodLengthSeconds = (period <= 3) ? 1200 : 300;
+                    const remainingTotalSeconds = Math.max(0, periodLengthSeconds - elapsedTotalSeconds);
+                    
+                    const remainingMinutes = Math.floor(remainingTotalSeconds / 60);
+                    const remainingSecs = remainingTotalSeconds % 60;
+                    timeDisplay = `${remainingMinutes}:${remainingSecs.toString().padStart(2, '0')}`;
+                } else {
+                    // If time is 00:00, show full period time remaining
+                    timeDisplay = (period <= 3) ? '20:00' : '5:00';
+                }
+                
+                if (period === 1) {
+                    periodDisplay = '1st';
+                } else if (period === 2) {
+                    periodDisplay = '2nd';
+                } else if (period === 3) {
+                    periodDisplay = '3rd';
+                } else if (period === 4) {
+                    periodDisplay = 'OT';
+                } else {
+                    periodDisplay = `${period}th`;
+                }
+            }
+            
+            const gameDetails = document.getElementById('gameDetails');
+            const placeholder = document.getElementById('game-content-placeholder');
+            
+            // Show basic scoreboard immediately
+            gameDetails.innerHTML = `
+                <div class="back-button-container">
+                    <button class="back-button" onclick="showGamesList()">← Back to Games</button>
+                </div>
+                <div class="scoreboard-winprob-container">
+                    <div class="live-score-container">
+                        <div class="live-score-teams">
+                            <div class="live-team-row">
+                                <img src="${awayLogo}" alt="${awayTeam}" class="live-team-logo" onerror="this.style.display='none'">
+                                <div class="live-team-info">
+                                    <div class="live-team-score">${awayScore}</div>
+                                    <div class="live-team-name">${awayTeam}</div>
+                                </div>
+                            </div>
+                            <div class="live-team-row">
+                                <img src="${homeLogo}" alt="${homeTeam}" class="live-team-logo" onerror="this.style.display='none'">
+                                <div class="live-team-info">
+                                    <div class="live-team-score">${homeScore}</div>
+                                    <div class="live-team-name">${homeTeam}</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="live-status-info">
+                            ${isLive ? '<div class="live-indicator-red"></div>' : ''}
+                            ${isFinal ? 
+                                `<div class="live-time-remaining" style="font-size: 1.1em; font-weight: 500;">${statusDisplay}</div>
+                                 <div class="live-period" style="display: none;"></div>` :
+                                `<div class="live-time-remaining">${timeDisplay}</div>
+                                 <div class="live-period">${periodDisplay}</div>`
+                            }
+                        </div>
+                    </div>
+                    <div class="win-prob">
+                        <div class="win-prob-title">Win Probability</div>
+                        <div style="text-align: center; padding: 40px; color: #aaaaaa;">Loading...</div>
+                    </div>
+                </div>
+                <div class="game-tabs">
+                    <div class="tab active" onclick="switchTab('feed', '${gameId}')" id="feed-tab">Feed</div>
+                    <div class="tab" onclick="switchTab('game', '${gameId}')" id="game-tab">Game</div>
+                    <div class="tab" onclick="switchTab('away-team', '${gameId}')" id="away-team-tab">${basicInfo.away_team || awayTeam.substring(0, 3).toUpperCase()}</div>
+                    <div class="tab" onclick="switchTab('home-team', '${gameId}')" id="home-team-tab">${basicInfo.home_team || homeTeam.substring(0, 3).toUpperCase()}</div>
+                </div>
+                <div id="powerplay-display" style="display: none;"></div>
+                <div id="feed-content" class="tab-content active">
+                    <div id="playbyplay-feed" class="playbyplay-feed">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
+                <div id="game-content" class="tab-content">
+                    <div id="game-stats-container">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
+                <div id="away-team-content" class="tab-content">
+                    <div id="away-team-stats-container">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
+                <div id="home-team-content" class="tab-content">
+                    <div id="home-team-stats-container">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
+            `;
+            
+            // Set current game info
+            currentGameId = gameId;
+            currentGameIsLive = isLive;
+            currentHomeTeam = homeTeam;
+            currentAwayTeam = awayTeam;
+            currentHomeLogo = homeLogo;
+            currentAwayLogo = awayLogo;
+            
+            // Start live score polling if game is live
+            if (isLive) {
+                startLiveScorePolling(gameId);
+            }
+            
+            // Load play-by-play immediately (uses cached data if available)
+            loadPlayByPlay(gameId, homeTeam, awayTeam, homeLogo, awayLogo, isLive);
+            
+            gameDetails.style.display = 'block';
+            gameDetails.classList.add('show');
+            gameDetails.scrollIntoView({ behavior: 'smooth' });
+        }
+        
+        // Refresh game data in background
+        async function refreshGameData(gameId) {
+            try {
+                const response = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`);
+                if (response.ok) {
+                    const data = await response.json();
+                    gameDataCache[gameId] = data;
+                    // Only update UI if we're still viewing this game
+                    if (currentGameId === gameId) {
+                        displayResults(data);
+                    }
+                }
+            } catch (error) {
+                // Silently fail - cached data is still valid
+            }
         }
 
         async function startIngestionForGame(gameId) {
-            const loading = document.getElementById('loading');
-            loading.style.display = 'block';
-            showStatus('Starting ingestion...', 'info');
-
             try {
                 const response = await fetch(`${API_BASE}/v1/games/${gameId}/start`, {
                     method: 'POST'
@@ -246,22 +673,36 @@
                 const data = await response.json();
 
                 if (response.ok) {
-                    showStatus(`${data.message}. Processing game data...`, 'success');
                     pollForResults(gameId);
                 } else {
-                    showStatus(`Error: ${data.detail || 'Unknown error'}`, 'error');
-                    loading.style.display = 'none';
+                    // Show error message in game details with back button already visible
+                    const gameDetails = document.getElementById('gameDetails');
+                    const placeholder = document.getElementById('game-content-placeholder');
+                    if (placeholder) {
+                        placeholder.innerHTML = `
+                            <div style="text-align: center; padding: 40px; color: #ee8888;">
+                                <div style="font-size: 1.2em; margin-bottom: 10px;">Error</div>
+                                <div>${data.detail || 'Unknown error'}</div>
+                            </div>
+                        `;
+                    }
                 }
             } catch (error) {
-                showStatus(`Error: ${error.message}`, 'error');
-                loading.style.display = 'none';
+                // Show error message in game details with back button already visible
+                const gameDetails = document.getElementById('gameDetails');
+                const placeholder = document.getElementById('game-content-placeholder');
+                if (placeholder) {
+                    placeholder.innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #ee8888;">
+                            <div style="font-size: 1.2em; margin-bottom: 10px;">Error</div>
+                            <div>${error.message}</div>
+                        </div>
+                    `;
+                }
             }
         }
 
         async function pollForResults(gameId) {
-            const loading = document.getElementById('loading');
-            loading.style.display = 'block';
-
             try {
                 const statusResponse = await fetch(`${API_BASE}/v1/games/${gameId}/status`);
                 
@@ -283,50 +724,86 @@
                 }
 
                 if (statusData.ingestion_status === 'in_progress') {
-                    showStatus('Ingestion in progress. Waiting for results...', 'info');
+                    // Update placeholder to show loading state
+                    const placeholder = document.getElementById('game-content-placeholder');
+                    if (placeholder) {
+                        placeholder.innerHTML = '<div class="spinner"></div><div style="text-align: center; color: #aaaaaa; margin-top: 20px;">Ingestion in progress. Waiting for results...</div>';
+                    }
                     setTimeout(() => pollForResults(gameId), 5000);
                     return;
                 }
 
                 if (statusData.ingestion_status === 'failed') {
-                    showStatus(`Ingestion failed: ${statusData.error || 'Unknown error'}`, 'error');
-                    loading.style.display = 'none';
+                    // Show error message in game details with back button already visible
+                    const gameDetails = document.getElementById('gameDetails');
+                    const placeholder = document.getElementById('game-content-placeholder');
+                    if (placeholder) {
+                        placeholder.innerHTML = `
+                            <div style="text-align: center; padding: 40px; color: #ee8888;">
+                                <div style="font-size: 1.2em; margin-bottom: 10px;">Ingestion Failed</div>
+                                <div>${statusData.error || 'Unknown error'}</div>
+                            </div>
+                        `;
+                    }
                     return;
                 }
 
-                showStatus('Processing... Please wait', 'info');
+                // Update placeholder to show processing state
+                const placeholder = document.getElementById('game-content-placeholder');
+                if (placeholder) {
+                    placeholder.innerHTML = '<div class="spinner"></div><div style="text-align: center; color: #aaaaaa; margin-top: 20px;">Processing... Please wait</div>';
+                }
                 setTimeout(() => pollForResults(gameId), 5000);
             } catch (error) {
                 console.error('Status check error:', error);
                 const errorMsg = error.message || 'Network error';
-                showStatus(`Error checking status: ${errorMsg}`, 'error');
-                loading.style.display = 'none';
+                // Show error message in game details
+                const placeholder = document.getElementById('game-content-placeholder');
+                if (placeholder) {
+                    placeholder.innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #ee8888;">
+                            <div style="font-size: 1.2em; margin-bottom: 10px;">Error</div>
+                            <div>${errorMsg}</div>
+                        </div>
+                    `;
+                }
             }
         }
 
         async function fetchResults(gameId) {
-            const loading = document.getElementById('loading');
-            const gameDetails = document.getElementById('gameDetails');
-            const startBtn = document.getElementById('startBtn');
-
             try {
                 const response = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`);
                 const data = await response.json();
 
                 if (response.ok) {
                     displayResults(data);
-                    loading.style.display = 'none';
-                    showStatus('Results loaded successfully!', 'success');
                 } else if (response.status === 202) {
-                    showStatus(data.detail, 'info');
                     setTimeout(() => pollForResults(gameId), 5000);
                 } else {
-                    showStatus(`${data.detail || 'Error fetching results'}`, 'error');
-                    loading.style.display = 'none';
+                    // Show error message in game details with back button already visible
+                    const gameDetails = document.getElementById('gameDetails');
+                    const placeholder = document.getElementById('game-content-placeholder');
+                    if (placeholder) {
+                        placeholder.innerHTML = `
+                            <div style="text-align: center; padding: 40px; color: #ee8888;">
+                                <div style="font-size: 1.2em; margin-bottom: 10px;">Error Loading Game</div>
+                                <div>${data.detail || 'Unknown error'}</div>
+                            </div>
+                        `;
+                    }
                 }
             } catch (error) {
-                showStatus(`Error: ${error.message}`, 'error');
-                loading.style.display = 'none';
+                // Show error message in game details with back button already visible
+                const gameDetails = document.getElementById('gameDetails');
+                const placeholder = document.getElementById('game-content-placeholder');
+                if (placeholder) {
+                    placeholder.innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #ee8888;">
+                            <div style="font-size: 1.2em; margin-bottom: 10px;">Error Loading Game</div>
+                            <div>${error.message}</div>
+                        </div>
+                    `;
+                }
             }
         }
 
@@ -340,11 +817,32 @@
             // Show game details
             const gameDetails = document.getElementById('gameDetails');
             if (gameDetails) {
+                // Always add a back button when showing game details (even during loading/errors)
+                if (!gameDetails.innerHTML.includes('back-button')) {
+                    gameDetails.innerHTML = `
+                        <div class="back-button-container">
+                            <button class="back-button" onclick="showGamesList()">← Back to Games</button>
+                        </div>
+                        <div id="game-content-placeholder"></div>
+                    `;
+                }
                 gameDetails.style.display = 'block';
             }
         }
         
         function showGamesList() {
+            // Stop polling for the current game when navigating away
+            stopPollingForCurrentGame();
+            stopPlayByPlayPolling();
+            stopLiveScorePolling();
+            stopPowerPlayPolling();
+            currentGameId = null;
+            currentGameIsLive = false;
+            // Reset feed tracking when navigating away
+            renderedEventIds.clear();
+            lastRenderedEventCount = 0;
+            lastPenaltyCount = 0;
+            
             // Show games list
             const mainContainer = document.querySelector('.main-container');
             if (mainContainer) {
@@ -360,6 +858,650 @@
             
             // Scroll to top
             window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+        
+        function startGamesListPolling(date) {
+            // Stop any existing polling
+            stopGamesListPolling();
+            
+            // Poll every 2 seconds for games list updates (to refresh live game periods/times more frequently)
+            gamesListPollInterval = setInterval(async () => {
+                // Only poll if we're on the games list (not in game details)
+                const mainContainer = document.querySelector('.main-container');
+                if (mainContainer && mainContainer.style.display !== 'none') {
+                    // Reload games list in background to update live game info
+                    try {
+                        const dateStr = formatDateLocal(date || new Date());
+                        const url = `${API_BASE}/v1/games?date=${dateStr}`;
+                        const response = await fetch(url);
+                        if (!response.ok) {
+                            // Silently fail - will retry on next poll
+                            return;
+                        }
+                        const data = await response.json();
+                        
+                        if (data.games && data.games.length > 0) {
+                            // Update basic game info for instant display
+                            data.games.forEach(game => {
+                                gamesListData[game.game_id] = {
+                                    game_id: game.game_id,
+                                    home_team_name: game.home_team_name || game.home_team,
+                                    away_team_name: game.away_team_name || game.away_team,
+                                    home_team: game.home_team || '', // Abbreviation from API
+                                    away_team: game.away_team || '', // Abbreviation from API
+                                    home_team_logo: game.home_team_logo || '',
+                                    away_team_logo: game.away_team_logo || '',
+                                    home_score: game.home_score || 0,
+                                    away_score: game.away_score || 0,
+                                    game_state: game.game_state,
+                                    period: game.period,
+                                    time_in_period: game.time_in_period,
+                                    overtime_type: game.overtime_type || null, // OT, SO, or null
+                                    is_live: game.game_state === 'LIVE' || game.game_state === 'CRIT'
+                                };
+                            });
+                            
+                            // Check if there are still live games
+                            const hasLiveGames = data.games.some(g => g.game_state === 'LIVE' || g.game_state === 'CRIT');
+                            if (!hasLiveGames) {
+                                stopGamesListPolling();
+                                stopAllLiveGameFeedPolling();
+                            } else {
+                                // Start/update polling for all live games
+                                updateLiveGameFeedPolling(data.games);
+                            }
+                            
+                            // Only update if we're still on the games list
+                            const mainContainerCheck = document.querySelector('.main-container');
+                            if (mainContainerCheck && mainContainerCheck.style.display !== 'none') {
+                                // Re-render games list with updated data
+                                const gamesList = document.getElementById('gamesList');
+                                if (gamesList) {
+                                    // Use the same rendering logic as loadGamesList
+                                    gamesList.innerHTML = data.games.map(game => {
+                                        const isFinal = game.game_state === 'OFF' || game.game_state === 'FINAL';
+                                        const homeScore = game.home_score || 0;
+                                        const awayScore = game.away_score || 0;
+                                        const homeIsWinner = homeScore > awayScore;
+                                        const awayIsWinner = awayScore > homeScore;
+                                        const isTie = homeScore === awayScore;
+                                        
+                                        // Format final status text
+                                        let finalStatusText = "▼ Final";
+                                        if (isFinal && game.overtime_type === "OT") {
+                                            finalStatusText = "▼ Final/OT";
+                                        } else if (isFinal && game.overtime_type === "SO") {
+                                            finalStatusText = "▼ Final/SO";
+                                        }
+                                        
+                                        if (isFinal && !isTie) {
+                                            // Final game display (same as before)
+                                            const awayRow = awayIsWinner ?
+                                                `<div class="game-score-row winner">
+                                                    <div class="game-winner-indicator">▶</div>
+                                                    <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="game-team-logo" onerror="this.style.display='none'">
+                                                    <div class="game-team-name">${game.away_team_name || game.away_team}</div>
+                                                    <div class="game-team-score">${awayScore}</div>
+                                                </div>` :
+                                                `<div class="game-score-row loser">
+                                                    <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="game-team-logo" onerror="this.style.display='none'">
+                                                    <div class="game-team-name">${game.away_team_name || game.away_team}</div>
+                                                    <div class="game-team-score">${awayScore}</div>
+                                                </div>`;
+                                            
+                                            const homeRow = homeIsWinner ?
+                                                `<div class="game-score-row winner">
+                                                    <div class="game-winner-indicator">▶</div>
+                                                    <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-team-logo" onerror="this.style.display='none'">
+                                                    <div class="game-team-name">${game.home_team_name || game.home_team}</div>
+                                                    <div class="game-team-score">${homeScore}</div>
+                                                </div>` :
+                                                `<div class="game-score-row loser">
+                                                    <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-team-logo" onerror="this.style.display='none'">
+                                                    <div class="game-team-name">${game.home_team_name || game.home_team}</div>
+                                                    <div class="game-team-score">${homeScore}</div>
+                                                </div>`;
+                                            
+                                            return `
+                                                <div class="game-card" onclick="selectGame('${game.game_id}')">
+                                                    <div class="game-card-header">
+                                                        <span class="game-status-text">${finalStatusText}</span>
+                                                    </div>
+                                                    <div class="game-score-teams">
+                                                        ${awayRow}
+                                                        ${homeRow}
+                                                    </div>
+                                                </div>
+                                            `;
+                                        } else {
+                                            // Live or future game display (same as before)
+                                            const isLive = game.game_state === 'LIVE' || game.game_state === 'CRIT';
+                                            
+                                            let gameTimeDisplay = 'TBD';
+                                            let periodDisplay = '';
+                                            if (isLive) {
+                                                // For live games, always try to show period and time remaining
+                                                const period = game.period || game.periodDescriptor?.number || null;
+                                                const timeInPeriod = game.time_in_period || game.timeInPeriod || null;
+                                                
+                                                if (period && timeInPeriod) {
+                                                    // Format period: "1st", "2nd", "3rd", "OT", etc.
+                                                    let periodLabel;
+                                                    if (period === 1) {
+                                                        periodLabel = '1st';
+                                                    } else if (period === 2) {
+                                                        periodLabel = '2nd';
+                                                    } else if (period === 3) {
+                                                        periodLabel = '3rd';
+                                                    } else if (period === 4) {
+                                                        periodLabel = 'OT';
+                                                    } else {
+                                                        periodLabel = `${period}th`;
+                                                    }
+                                                    
+                                                    // Convert time based on source
+                                                    // If is_time_remaining is true, timeInPeriod is already time remaining
+                                                    // If false or undefined, timeInPeriod is elapsed time and needs conversion
+                                                    const isTimeRemaining = game.is_time_remaining === true;
+                                                    let formattedTime;
+                                                    if (timeInPeriod && timeInPeriod !== '00:00') {
+                                                        if (isTimeRemaining) {
+                                                            // Already time remaining, use directly
+                                                            const [minutes, seconds] = timeInPeriod.split(':').map(Number);
+                                                            formattedTime = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+                                                        } else {
+                                                            // Convert elapsed time to remaining
+                                                            const [elapsedMinutes, elapsedSeconds] = timeInPeriod.split(':').map(Number);
+                                                            const elapsedTotalSeconds = elapsedMinutes * 60 + elapsedSeconds;
+                                                            
+                                                            // Determine period length: 20 minutes (1200 seconds) for regulation, 5 minutes (300 seconds) for OT
+                                                            const periodLengthSeconds = (period <= 3) ? 1200 : 300;
+                                                            const remainingTotalSeconds = Math.max(0, periodLengthSeconds - elapsedTotalSeconds);
+                                                            
+                                                            const remainingMinutes = Math.floor(remainingTotalSeconds / 60);
+                                                            const remainingSecs = remainingTotalSeconds % 60;
+                                                            formattedTime = `${remainingMinutes}:${remainingSecs.toString().padStart(2, '0')}`;
+                                                        }
+                                                    } else {
+                                                        // If time is 00:00, show full period time remaining
+                                                        formattedTime = (period <= 3) ? '20:00' : '5:00';
+                                                    }
+                                                    
+                                                    // Separate time and period for display
+                                                    gameTimeDisplay = formattedTime;
+                                                    periodDisplay = periodLabel;
+                                                } else {
+                                                    // If period/time data is missing, show default time remaining
+                                                    gameTimeDisplay = '20:00';
+                                                    periodDisplay = '1st';
+                                                }
+                                            } else if (game.start_time_utc) {
+                                                try {
+                                                    const utcDate = new Date(game.start_time_utc);
+                                                    const localTime = utcDate.toLocaleTimeString('en-US', {
+                                                        hour: 'numeric',
+                                                        minute: '2-digit',
+                                                        hour12: true
+                                                    });
+                                                    gameTimeDisplay = localTime;
+                                                } catch (e) {
+                                                    gameTimeDisplay = 'TBD';
+                                                }
+                                            }
+                                            
+                                            const showRecords = !isLive;
+                                            const awayRecord = showRecords && game.away_team_record ? `<div class="game-team-record">${game.away_team_record}</div>` : '';
+                                            const homeRecord = showRecords && game.home_team_record ? `<div class="game-team-record">${game.home_team_record}</div>` : '';
+                                            
+                                            return `
+                                                <div class="game-card ${isLive ? 'live' : ''}" onclick="selectGame('${game.game_id}')">
+                                                    <div class="game-live-score">
+                                                        <div class="game-live-team-left">
+                                                            <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="game-live-logo" onerror="this.style.display='none'">
+                                                            <div class="game-live-score-num">${awayScore}</div>
+                                                            <div class="game-live-team-name">${game.away_team_name || game.away_team}</div>
+                                                            ${awayRecord}
+                                                        </div>
+                                                        <div class="game-live-time-container">
+                                                            ${isLive ? '<div class="game-live-indicator"></div>' : ''}
+                                                            <div class="game-live-time">${gameTimeDisplay}</div>
+                                                            ${isLive ? 
+                                                                `<div class="game-spread">${periodDisplay}</div>` :
+                                                                (game.spread !== null && game.spread !== undefined ? 
+                                                                    `<div class="game-spread">${game.spread_favorite === 'home' ? game.home_team_name : game.away_team_name} ${game.spread > 0 ? '+' : ''}${game.spread}</div>` : 
+                                                                    '<div class="game-spread">N/A</div>')}
+                                                        </div>
+                                                        <div class="game-live-team-right">
+                                                            <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-live-logo" onerror="this.style.display='none'">
+                                                            <div class="game-live-score-num">${homeScore}</div>
+                                                            <div class="game-live-team-name">${game.home_team_name || game.home_team}</div>
+                                                            ${homeRecord}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            `;
+                                        }
+                                    }).join('');
+                                }
+                            }
+                        }
+                    } catch (error) {
+                        // Silently handle network errors - don't spam console
+                        // Only log if it's a non-network error
+                        if (error.name !== 'TypeError' || !error.message.includes('fetch')) {
+                            console.error('Error polling games list:', error);
+                        }
+                        // Will retry on next poll interval
+                    }
+                } else {
+                    stopGamesListPolling();
+                }
+            }, 2000); // Poll every 2 seconds for faster updates (scoreboards and times always updated)
+        }
+        
+        function stopGamesListPolling() {
+            if (gamesListPollInterval !== null) {
+                clearInterval(gamesListPollInterval);
+                gamesListPollInterval = null;
+            }
+        }
+        
+        // Function to update polling for all live games
+        // Polling is now only active when viewing a specific game, not for all games in background
+        function updateLiveGameFeedPolling(games) {
+            const liveGames = games.filter(g => g.game_state === 'LIVE' || g.game_state === 'CRIT');
+            
+            // Stop polling for games that are no longer live (only if they're not currently being viewed)
+            const currentLiveGameIds = new Set(liveGames.map(g => g.game_id));
+            for (const gameId in liveGamesPolling) {
+                // Only stop if game is no longer live AND not currently being viewed
+                if (!currentLiveGameIds.has(gameId) && currentGameId !== gameId) {
+                    // Game is no longer live and not being viewed, stop its polling
+                    stopGameFeedPolling(gameId);
+                }
+            }
+            
+            // DON'T start polling for all games - only poll when viewing a specific game
+            // This prevents freezing from too many simultaneous updates
+        }
+        
+        // Function to start polling for a specific game (ONLY when viewing it)
+        function startGameFeedPolling(gameId, gameData) {
+            // Only poll if this is the currently viewed game
+            if (currentGameId !== gameId) {
+                return; // Don't poll games we're not viewing
+            }
+            
+            // Stop any existing polling for this game
+            stopGameFeedPolling(gameId);
+            
+            // Reset feed tracking when starting to view a new game
+            renderedEventIds.clear();
+            lastRenderedEventCount = 0;
+            
+            // Initialize cache for this game if it doesn't exist
+            if (!liveGamesFeedCache[gameId]) {
+                liveGamesFeedCache[gameId] = {
+                    homeTeam: gameData.home_team_name || '',
+                    awayTeam: gameData.away_team_name || '',
+                    homeLogo: gameData.home_team_logo || '',
+                    awayLogo: gameData.away_team_logo || '',
+                    isLive: true
+                };
+            }
+            
+            // Update feed cache immediately
+            updateGameFeedCache(gameId);
+            
+            // Ultra-fast polling (every 500ms) specifically for goals - goals must appear immediately
+            const goalCheckInterval = setInterval(async () => {
+                // Only poll if we're still viewing this game
+                if (currentGameId !== gameId) {
+                    clearInterval(goalCheckInterval);
+                    return;
+                }
+                
+                try {
+                    const response = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=10`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.events && data.events.length > 0) {
+                            const currentGoalCount = data.events.filter(e => e.event_type === 'GOAL').length;
+                            const currentEventCount = data.events.length;
+                            
+                            // Cache the feed data
+                            if (liveGamesFeedCache[gameId]) {
+                                liveGamesFeedCache[gameId].eventCount = currentEventCount;
+                                liveGamesFeedCache[gameId].goalCount = currentGoalCount;
+                            }
+                            
+                            // If we detect ANY new events (not just goals), refresh the full feed immediately
+                            const cached = liveGamesFeedCache[gameId];
+                            if (cached && (currentGoalCount > (cached.lastGoalCount || 0) || currentEventCount > (cached.lastEventCount || 0))) {
+                                // New events detected! Refresh full feed immediately (non-blocking)
+                                // Don't await - let it run in background
+                                updateGameFeedCache(gameId).catch(() => {
+                                    // Silently fail - errors are logged in updateGameFeedCache
+                                });
+                            }
+                        }
+                    }
+                } catch (error) {
+                    // Silently handle network errors - don't spam console
+                    // Only log if it's a non-network error
+                    if (error.name !== 'TypeError' || !error.message.includes('fetch')) {
+                        console.error('Error in goal check interval:', error);
+                    }
+                    // Don't stop polling on errors - will retry on next poll
+                }
+            }, 500); // Check every 500ms for goals and new events (ultra-fast for immediate goal display)
+            
+            // Normal polling every 1 second for general updates (faster feed updates)
+            const pollInterval = setInterval(async () => {
+                // Only poll if we're still viewing this game
+                if (currentGameId !== gameId) {
+                    clearInterval(pollInterval);
+                    return;
+                }
+                
+                try {
+                    // Always update feed cache for live games (faster updates) - non-blocking
+                    updateGameFeedCache(gameId).catch(() => {
+                        // Silently fail - errors are logged in updateGameFeedCache
+                    });
+                    
+                    // Also check if game is still live
+                    const response = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        const isLive = data.game && (data.game.is_live || data.game.game_state === 'LIVE' || data.game.game_state === 'CRIT');
+                        
+                        if (!isLive) {
+                            // Game is no longer live, stop polling
+                            stopGameFeedPolling(gameId);
+                        }
+                    }
+                } catch (error) {
+                    // Silently handle network errors - don't spam console
+                    // Only log if it's a non-network error
+                    if (error.name !== 'TypeError' || !error.message.includes('fetch')) {
+                        console.error('Error in normal polling interval:', error);
+                    }
+                    // On error, continue polling (game might still be live)
+                }
+            }, 1000); // Poll every 1 second for faster feed updates
+            
+            // Store intervals for this game
+            liveGamesPolling[gameId] = {
+                interval: pollInterval,
+                goalCheckInterval: goalCheckInterval,
+                gameData: gameData
+            };
+        }
+        
+        // Track ongoing updates to prevent conflicts
+        const ongoingFeedUpdates = new Set();
+        
+        // Function to update feed cache for a game (background update)
+        async function updateGameFeedCache(gameId) {
+            // Prevent multiple simultaneous updates for the same game
+            if (ongoingFeedUpdates.has(gameId)) {
+                return;
+            }
+            
+            ongoingFeedUpdates.add(gameId);
+            try {
+                const response = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=50`);
+                if (!response.ok) {
+                    console.error(`[Feed] Failed to fetch play-by-play for ${gameId}: ${response.status} ${response.statusText}`);
+                    ongoingFeedUpdates.delete(gameId);
+                    return;
+                }
+                
+                const data = await response.json();
+                // Only log if we have events to help debug
+                if (data.events && data.events.length > 0) {
+                    console.log(`[Feed] Received data for ${gameId}:`, {
+                        hasEvents: !!data.events,
+                        eventCount: data.events?.length || 0,
+                        gameState: data.game_state
+                    });
+                }
+                
+                if (data.events) {
+                    const cached = liveGamesFeedCache[gameId];
+                    if (cached) {
+                        cached.events = data.events;
+                        cached.lastEventCount = data.events.length;
+                        cached.lastGoalCount = data.events.filter(e => e.event_type === 'GOAL').length;
+                        cached.lastUpdate = Date.now();
+                        // Update game state from API response
+                        if (data.game_state) {
+                            cached.gameState = data.game_state;
+                        }
+                        
+                        // If this is the currently viewed game, update the display
+                        if (currentGameId === gameId) {
+                            const feed = document.getElementById('playbyplay-feed');
+                            if (feed) {
+                                try {
+                                    // Update the feed display using cached data
+                                    const isLive = cached.isLive !== undefined ? cached.isLive : (data.game_state === 'LIVE' || data.game_state === 'CRIT');
+                                    renderFeedEvents(cached.events, cached.homeTeam, cached.awayTeam, cached.homeLogo, cached.awayLogo, isLive, gameId, data.game_state);
+                                } catch (renderError) {
+                                    console.error('Error rendering feed events:', renderError);
+                                    // Don't stop polling on render errors
+                                }
+                            }
+                        }
+                    } else {
+                        // Initialize cache if it doesn't exist
+                        if (!liveGamesFeedCache[gameId]) {
+                            const gameData = liveGamesPolling[gameId]?.gameData || {};
+                            liveGamesFeedCache[gameId] = {
+                                homeTeam: gameData.home_team_name || '',
+                                awayTeam: gameData.away_team_name || '',
+                                homeLogo: gameData.home_team_logo || '',
+                                awayLogo: gameData.away_team_logo || '',
+                                isLive: true
+                            };
+                        }
+                        const cached = liveGamesFeedCache[gameId];
+                        if (cached) {
+                            cached.events = data.events || [];
+                            cached.lastEventCount = data.events ? data.events.length : 0;
+                            cached.lastGoalCount = data.events ? data.events.filter(e => e.event_type === 'GOAL').length : 0;
+                            cached.lastUpdate = Date.now();
+                        }
+                    }
+                }
+            } catch (error) {
+                // Silently handle network errors - don't spam console
+                // Only log if it's a non-network error or if it's the first error
+                if (error.name !== 'TypeError' || !error.message.includes('fetch')) {
+                    console.error('Error updating feed cache:', error);
+                }
+                // Don't stop polling on errors - will retry on next poll
+            } finally {
+                ongoingFeedUpdates.delete(gameId);
+            }
+        }
+        
+        // Function to stop polling for a specific game
+        function stopGameFeedPolling(gameId) {
+            if (liveGamesPolling[gameId]) {
+                if (liveGamesPolling[gameId].interval) {
+                    clearInterval(liveGamesPolling[gameId].interval);
+                }
+                if (liveGamesPolling[gameId].goalCheckInterval) {
+                    clearInterval(liveGamesPolling[gameId].goalCheckInterval);
+                }
+                delete liveGamesPolling[gameId];
+            }
+        }
+        
+        // Function to stop all background game feed polling
+        function stopAllLiveGameFeedPolling() {
+            for (const gameId in liveGamesPolling) {
+                stopGameFeedPolling(gameId);
+            }
+            liveGamesPolling = {};
+        }
+        
+        // Function to stop polling when navigating away from a game
+        function stopPollingForCurrentGame() {
+            if (currentGameId) {
+                stopGameFeedPolling(currentGameId);
+            }
+        }
+        
+        function stopPlayByPlayPolling() {
+            if (playByPlayPollInterval !== null) {
+                clearInterval(playByPlayPollInterval);
+                playByPlayPollInterval = null;
+            }
+            if (goalCheckPollInterval !== null) {
+                clearInterval(goalCheckPollInterval);
+                goalCheckPollInterval = null;
+            }
+        }
+
+        function startPowerPlayPolling(gameId) {
+            // Stop any existing polling
+            stopPowerPlayPolling();
+            
+            // Poll every 1 second for power play status updates (more frequent for better responsiveness)
+            powerPlayPollInterval = setInterval(async () => {
+                // Only check if we're still viewing this game
+                const powerPlayDisplay = document.getElementById('powerplay-display');
+                if (!powerPlayDisplay || currentGameId !== gameId) {
+                    stopPowerPlayPolling();
+                    return;
+                }
+                
+                // Update power play status
+                loadPowerPlayStatus(gameId);
+            }, 1000); // Poll every 1 second for better responsiveness
+        }
+
+        function stopPowerPlayPolling() {
+            if (powerPlayPollInterval !== null) {
+                clearInterval(powerPlayPollInterval);
+                powerPlayPollInterval = null;
+            }
+        }
+        
+        function startLiveScorePolling(gameId) {
+            // Stop any existing polling
+            stopLiveScorePolling();
+            
+            // Poll every 500ms for live scores and times (ultra-fast updates while viewing)
+            liveScorePollInterval = setInterval(async () => {
+                // Only poll if we're still viewing this game and it's still live
+                if (currentGameId === gameId && currentGameIsLive) {
+                    try {
+                        const response = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`);
+                        if (response.ok) {
+                            const data = await response.json();
+                            // Update only the score display, not the entire page
+                            updateLiveScoreDisplay(data);
+                            // Also update currentGameIsLive in case it changed
+                            const isLive = data.game && (data.game.is_live || data.game.game_state === 'LIVE' || data.game.game_state === 'CRIT');
+                            currentGameIsLive = isLive;
+                            if (!isLive) {
+                                stopLiveScorePolling();
+                            }
+                        }
+                    } catch (error) {
+                        // Silently handle network errors - don't spam console
+                        // Only log if it's a non-network error
+                        if (error.name !== 'TypeError' || !error.message.includes('fetch')) {
+                            console.error('Error updating live score:', error);
+                        }
+                    }
+                } else {
+                    // Stop polling if we've navigated away or game is no longer live
+                    stopLiveScorePolling();
+                }
+            }, 500); // Poll every 500ms for real-time updates
+        }
+        
+        function stopLiveScorePolling() {
+            if (liveScorePollInterval !== null) {
+                clearInterval(liveScorePollInterval);
+                liveScorePollInterval = null;
+            }
+        }
+        
+        function updateLiveScoreDisplay(data) {
+            const game = data.game;
+            const score = data.score;
+            
+            const homeScore = score.home.goals;
+            const awayScore = score.away.goals;
+            const period = game.period || 1;
+            const timeInPeriod = game.time_in_period || '00:00';
+            const isLive = game.is_live || false;
+            
+            // Convert time elapsed to time remaining
+            // timeInPeriod is elapsed time in MM:SS format (e.g., "00:30" = 30 seconds elapsed)
+            // We need to convert to time remaining
+            let timeDisplay = '';
+            if (timeInPeriod && timeInPeriod !== '00:00') {
+                const [elapsedMinutes, elapsedSeconds] = timeInPeriod.split(':').map(Number);
+                const elapsedTotalSeconds = elapsedMinutes * 60 + elapsedSeconds;
+                
+                // Determine period length: 20 minutes (1200 seconds) for regulation, 5 minutes (300 seconds) for OT
+                const periodLengthSeconds = (period <= 3) ? 1200 : 300;
+                const remainingTotalSeconds = Math.max(0, periodLengthSeconds - elapsedTotalSeconds);
+                
+                const remainingMinutes = Math.floor(remainingTotalSeconds / 60);
+                const remainingSecs = remainingTotalSeconds % 60;
+                timeDisplay = `${remainingMinutes}:${remainingSecs.toString().padStart(2, '0')}`;
+            } else {
+                // If time is 00:00, show full period time remaining
+                timeDisplay = (period <= 3) ? '20:00' : '5:00';
+            }
+            
+            // Format period - use the same format as in displayResults
+            let periodDisplay = '';
+            if (period === 1) {
+                periodDisplay = '1st';
+            } else if (period === 2) {
+                periodDisplay = '2nd';
+            } else if (period === 3) {
+                periodDisplay = '3rd';
+            } else if (period === 4) {
+                periodDisplay = 'OT';
+            } else {
+                periodDisplay = `${period}th`;
+            }
+            
+            // Update score displays
+            const scoreElements = document.querySelectorAll('.live-team-score');
+            if (scoreElements.length >= 2) {
+                scoreElements[0].textContent = awayScore;
+                scoreElements[1].textContent = homeScore;
+            }
+            
+            // Update time and period - these must be updated in real-time
+            const timeElement = document.querySelector('.live-time-remaining');
+            if (timeElement) {
+                timeElement.textContent = timeDisplay;
+            }
+            
+            const periodElement = document.querySelector('.live-period');
+            if (periodElement) {
+                periodElement.textContent = periodDisplay;
+            }
+            
+            // Update live indicator
+            const liveIndicator = document.querySelector('.live-status-info');
+            if (liveIndicator && !isLive) {
+                // Game ended, stop polling
+                stopLiveScorePolling();
+                currentGameIsLive = false;
+            }
         }
 
         async function displayResults(data) {
@@ -426,26 +1568,28 @@
                 const finalHomeLogo = finalData.home_logo || '';
                 const finalAwayLogo = finalData.away_logo || '';
                 
-                // Order: loser first (top), winner second (bottom) with triangle
-                const winnerRow = homeIsWinner ? 
+                // Order: Top team = Away team, Bottom team = Home team
+                // Away team row (always on top)
+                const awayRow = awayIsWinner ? 
                     `<div class="final-team-row winner">
                         <div class="final-winner-indicator">▶</div>
-                        <img src="${finalHomeLogo}" alt="${finalHomeTeam}" class="final-team-logo" onerror="this.style.display='none'">
-                        <div class="final-team-name">${finalHomeTeam}</div>
-                        <div class="final-team-score">${finalHomeScore}</div>
+                        <img src="${finalAwayLogo}" alt="${finalAwayTeam}" class="final-team-logo" onerror="this.style.display='none'">
+                        <div class="final-team-name">${finalAwayTeam}</div>
+                        <div class="final-team-score">${finalAwayScore}</div>
                     </div>` :
-                    `<div class="final-team-row winner">
-                        <div class="final-winner-indicator">▶</div>
+                    `<div class="final-team-row loser">
                         <img src="${finalAwayLogo}" alt="${finalAwayTeam}" class="final-team-logo" onerror="this.style.display='none'">
                         <div class="final-team-name">${finalAwayTeam}</div>
                         <div class="final-team-score">${finalAwayScore}</div>
                     </div>`;
                 
-                const loserRow = homeIsWinner ?
-                    `<div class="final-team-row loser">
-                        <img src="${finalAwayLogo}" alt="${finalAwayTeam}" class="final-team-logo" onerror="this.style.display='none'">
-                        <div class="final-team-name">${finalAwayTeam}</div>
-                        <div class="final-team-score">${finalAwayScore}</div>
+                // Home team row (always on bottom)
+                const homeRow = homeIsWinner ?
+                    `<div class="final-team-row winner">
+                        <div class="final-winner-indicator">▶</div>
+                        <img src="${finalHomeLogo}" alt="${finalHomeTeam}" class="final-team-logo" onerror="this.style.display='none'">
+                        <div class="final-team-name">${finalHomeTeam}</div>
+                        <div class="final-team-score">${finalHomeScore}</div>
                     </div>` :
                     `<div class="final-team-row loser">
                         <img src="${finalHomeLogo}" alt="${finalHomeTeam}" class="final-team-logo" onerror="this.style.display='none'">
@@ -462,30 +1606,61 @@
                 }
                 
                 gameDetails.innerHTML = `
-                    <div class="back-button-container">
-                        <button class="back-button" onclick="showGamesList()">← Back to Games</button>
-                    </div>
-                    <div class="final-score-container">
-                        <div class="final-score-header">
-                            <span class="final-status">${finalStatusText}</span>
+                    <div class="scoreboard-winprob-container">
+                        <div class="final-score-container">
+                            <div class="final-score-header">
+                                <button class="back-button" onclick="showGamesList()">← Back to Games</button>
+                                <span class="final-status">${finalStatusText}</span>
+                            </div>
+                            <div class="final-score-teams">
+                                ${awayRow}
+                                ${homeRow}
+                            </div>
                         </div>
-                        <div class="final-score-teams">
-                            ${loserRow}
-                            ${winnerRow}
+                        <div class="win-prob">
+                            <div class="win-prob-title">Win Probability</div>
+                            ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, false, finalHomeLogo, finalAwayLogo, finalData.home_abbrev || '', finalData.away_abbrev || '')}
                         </div>
                     </div>
 
-                    <div class="win-prob">
-                        <div class="win-prob-title">Win Probability</div>
-                        ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, false, finalHomeLogo, finalAwayLogo, finalData.home_abbrev || '', finalData.away_abbrev || '')}
-                    </div>
-
+                <div class="game-tabs">
+                    <div class="tab active" onclick="switchTab('feed', '${gameId}')" id="feed-tab">Feed</div>
+                    <div class="tab" onclick="switchTab('game', '${gameId}')" id="game-tab">Game</div>
+                    <div class="tab" onclick="switchTab('away-team', '${gameId}')" id="away-team-tab">${finalData.away_abbrev || awayTeam.substring(0, 3).toUpperCase()}</div>
+                    <div class="tab" onclick="switchTab('home-team', '${gameId}')" id="home-team-tab">${finalData.home_abbrev || homeTeam.substring(0, 3).toUpperCase()}</div>
+                </div>
+                <div id="powerplay-display" style="display: none;"></div>
+                <div id="feed-content" class="tab-content active">
                     <div id="playbyplay-feed" class="playbyplay-feed">
                         <div class="spinner"></div>
                     </div>
+                </div>
+                <div id="game-content" class="tab-content">
+                    <div id="game-stats-container">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
+                <div id="away-team-content" class="tab-content">
+                    <div id="away-team-stats-container">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
+                <div id="home-team-content" class="tab-content">
+                    <div id="home-team-stats-container">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
                 `;
                 
-                loadPlayByPlay(gameId, homeTeam, awayTeam);
+                // Stop any existing polling (for final games)
+                stopPlayByPlayPolling();
+                currentGameId = gameId;
+                currentGameIsLive = false;
+                currentHomeTeam = homeTeam;
+                currentAwayTeam = awayTeam;
+                currentHomeLogo = finalHomeLogo;
+                currentAwayLogo = finalAwayLogo;
+                loadPlayByPlay(gameId, homeTeam, awayTeam, finalHomeLogo, finalAwayLogo, false);
                 gameDetails.style.display = 'block';
                 gameDetails.classList.add('show');
                 gameDetails.scrollIntoView({ behavior: 'smooth' });
@@ -495,59 +1670,146 @@
             const homeLogo = score.home.logo || '';
             const awayLogo = score.away.logo || '';
             const isLive = game.is_live || false;
+            const gameState = game.game_state || '';
+            const gameIsFinal = gameState === 'OFF' || gameState === 'FINAL';
             const period = game.period || 1;
             const timeInPeriod = game.time_in_period || '00:00';
+            const gameOvertimeType = game.overtime_type || data.overtime_type || null;
             
-            // Format time: convert MM:SS to minutes (e.g., "19:46" -> "19'")
+            // Format time and period for live games, or final status for finished games
             let timeDisplay = '';
-            if (timeInPeriod) {
-                const [minutes, seconds] = timeInPeriod.split(':');
-                timeDisplay = `${minutes}'`;
-            } else {
-                timeDisplay = `P${period}`;
-            }
+            let periodDisplay = '';
+            let statusDisplay = '';
             
-            // Format spread
-            let spreadDisplay = 'N/A';
-            if (game.spread !== null && game.spread !== undefined) {
-                const favoriteTeam = game.spread_favorite === 'home' ? homeTeam : awayTeam;
-                const spreadSign = game.spread > 0 ? '+' : '';
-                spreadDisplay = `${favoriteTeam} ${spreadSign}${game.spread}`;
+            if (gameIsFinal) {
+                // For finished games, show "Final", "Final/OT", or "Final/SO"
+                if (gameOvertimeType === 'OT') {
+                    statusDisplay = 'Final/OT';
+                } else if (gameOvertimeType === 'SO') {
+                    statusDisplay = 'Final/SO';
+                } else {
+                    statusDisplay = 'Final';
+                }
+                // For final games, hide time and period, show final status instead
+                timeDisplay = '';
+                periodDisplay = '';
+            } else {
+                // Convert time elapsed to time remaining
+                // timeInPeriod is elapsed time in MM:SS format (e.g., "00:30" = 30 seconds elapsed)
+                // We need to convert to time remaining
+                if (timeInPeriod && timeInPeriod !== '00:00') {
+                    const [elapsedMinutes, elapsedSeconds] = timeInPeriod.split(':').map(Number);
+                    const elapsedTotalSeconds = elapsedMinutes * 60 + elapsedSeconds;
+                    
+                    // Determine period length: 20 minutes (1200 seconds) for regulation, 5 minutes (300 seconds) for OT
+                    const periodLengthSeconds = (period <= 3) ? 1200 : 300;
+                    const remainingTotalSeconds = Math.max(0, periodLengthSeconds - elapsedTotalSeconds);
+                    
+                    const remainingMinutes = Math.floor(remainingTotalSeconds / 60);
+                    const remainingSecs = remainingTotalSeconds % 60;
+                    timeDisplay = `${remainingMinutes}:${remainingSecs.toString().padStart(2, '0')}`;
+                } else {
+                    // If time is 00:00, show full period time remaining
+                    timeDisplay = (period <= 3) ? '20:00' : '5:00';
+                }
+                
+                // Format period: 1st, 2nd, 3rd, OT, SO
+                if (period === 1) {
+                    periodDisplay = '1st';
+                } else if (period === 2) {
+                    periodDisplay = '2nd';
+                } else if (period === 3) {
+                    periodDisplay = '3rd';
+                } else if (period === 4) {
+                    periodDisplay = 'OT';
+                } else {
+                    periodDisplay = `${period}th`;
+                }
             }
             
             gameDetails.innerHTML = `
                 <div class="back-button-container">
                     <button class="back-button" onclick="showGamesList()">← Back to Games</button>
                 </div>
-                <div class="live-score-container">
-                    <div class="live-team-left">
-                        <img src="${awayLogo}" alt="${awayTeam}" class="live-team-logo" onerror="this.style.display='none'">
-                        <div class="live-team-score">${awayScore}</div>
-                        <div class="live-team-name">${awayTeam}</div>
+                <div class="scoreboard-winprob-container">
+                    <div class="live-score-container">
+                        <div class="live-score-teams">
+                            <div class="live-team-row">
+                                <img src="${awayLogo}" alt="${awayTeam}" class="live-team-logo" onerror="this.style.display='none'">
+                                <div class="live-team-info">
+                                    <div class="live-team-score">${awayScore}</div>
+                                    <div class="live-team-name">${awayTeam}</div>
+                                </div>
+                            </div>
+                            <div class="live-team-row">
+                                <img src="${homeLogo}" alt="${homeTeam}" class="live-team-logo" onerror="this.style.display='none'">
+                                <div class="live-team-info">
+                                    <div class="live-team-score">${homeScore}</div>
+                                    <div class="live-team-name">${homeTeam}</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="live-status-info">
+                            ${isLive ? '<div class="live-indicator-red"></div>' : ''}
+                            ${gameIsFinal ? 
+                                `<div class="live-time-remaining" style="font-size: 1.1em; font-weight: 500;">${statusDisplay}</div>
+                                 <div class="live-period" style="display: none;"></div>` :
+                                `<div class="live-time-remaining">${timeDisplay}</div>
+                                 <div class="live-period">${periodDisplay}</div>`
+                            }
+                        </div>
                     </div>
-                    <div class="live-time-container">
-                        ${isLive ? '<div class="live-indicator"></div>' : ''}
-                        <div class="live-time">${timeDisplay}</div>
-                        <div class="game-spread">${spreadDisplay}</div>
-                    </div>
-                    <div class="live-team-right">
-                        <img src="${homeLogo}" alt="${homeTeam}" class="live-team-logo" onerror="this.style.display='none'">
-                        <div class="live-team-score">${homeScore}</div>
-                        <div class="live-team-name">${homeTeam}</div>
+                    <div class="win-prob">
+                        <div class="win-prob-title">Win Probability</div>
+                        ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive, homeLogo, awayLogo, score.home.abbrev || '', score.away.abbrev || '')}
                     </div>
                 </div>
 
-                <div class="win-prob">
-                    <div class="win-prob-title">Win Probability</div>
-                    ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive, homeLogo, awayLogo, score.home.abbrev || '', score.away.abbrev || '')}
+                <div class="game-tabs">
+                    <div class="tab active" onclick="switchTab('feed', '${gameId}')" id="feed-tab">Feed</div>
+                    <div class="tab" onclick="switchTab('game', '${gameId}')" id="game-tab">Game</div>
+                    <div class="tab" onclick="switchTab('away-team', '${gameId}')" id="away-team-tab">${score.away.abbrev || awayTeam.substring(0, 3).toUpperCase()}</div>
+                    <div class="tab" onclick="switchTab('home-team', '${gameId}')" id="home-team-tab">${score.home.abbrev || homeTeam.substring(0, 3).toUpperCase()}</div>
                 </div>
-
-                <div id="playbyplay-feed" class="playbyplay-feed">
-                    <div class="spinner"></div>
+                <div id="feed-content" class="tab-content active">
+                    <div id="playbyplay-feed" class="playbyplay-feed">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
+                <div id="game-content" class="tab-content">
+                    <div id="game-stats-container">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
+                <div id="away-team-content" class="tab-content">
+                    <div id="away-team-stats-container">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
+                <div id="home-team-content" class="tab-content">
+                    <div id="home-team-stats-container">
+                        <div class="spinner"></div>
+                    </div>
                 </div>
             `;
             
-            loadPlayByPlay(gameId, homeTeam, awayTeam);
+            // Stop any existing polling before starting new one
+            stopPlayByPlayPolling();
+            stopLiveScorePolling();
+            currentGameId = gameId;
+            currentGameIsLive = isLive;
+            currentHomeTeam = homeTeam;
+            currentAwayTeam = awayTeam;
+            currentHomeLogo = homeLogo;
+            currentAwayLogo = awayLogo;
+            
+            // Start live score polling if game is live (always keep scoreboard and times updated)
+            if (isLive) {
+                startLiveScorePolling(gameId);
+            }
+            
+            // Always load play-by-play (will fetch fresh data immediately)
+            loadPlayByPlay(gameId, homeTeam, awayTeam, homeLogo, awayLogo, isLive);
             gameDetails.style.display = 'block';
             gameDetails.classList.add('show');
             gameDetails.scrollIntoView({ behavior: 'smooth' });
@@ -562,8 +1824,8 @@
 
         function generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive, homeLogo = '', awayLogo = '', homeAbbrev = '', awayAbbrev = '') {
             // Determine graph dimensions
-            const width = 600;
-            const height = 200;
+            const width = 400;
+            const height = 120;
             const padding = { top: 20, right: 20, bottom: 30, left: 40 };
             const chartWidth = width - padding.left - padding.right;
             const chartHeight = height - padding.top - padding.bottom;
@@ -682,14 +1944,14 @@
                 <div class="win-prob-graph-container">
                     <div class="win-prob-graph-labels">
                         <div class="win-prob-graph-team-left">
-                            ${homeLogo ? `<img src="${homeLogo}" alt="${homeTeam}" class="win-prob-graph-logo" onerror="this.style.display='none'">` : ''}
-                            <span class="win-prob-graph-percentage">${homeProb.toFixed(1)}%</span>
-                            <span class="win-prob-graph-abbrev">-- ${homeAbbrevDisplay}</span>
+                            ${awayLogo ? `<img src="${awayLogo}" alt="${awayTeam}" class="win-prob-graph-logo" onerror="this.style.display='none'">` : ''}
+                            <span class="win-prob-graph-percentage">${awayProb.toFixed(1)}%</span>
+                            <span class="win-prob-graph-abbrev">-- ${awayAbbrevDisplay}</span>
                         </div>
                         <div class="win-prob-graph-team-right">
-                            <span class="win-prob-graph-abbrev">${awayAbbrevDisplay} --</span>
-                            <span class="win-prob-graph-percentage">${awayProb.toFixed(1)}%</span>
-                            ${awayLogo ? `<img src="${awayLogo}" alt="${awayTeam}" class="win-prob-graph-logo" onerror="this.style.display='none'">` : ''}
+                            <span class="win-prob-graph-abbrev">${homeAbbrevDisplay} --</span>
+                            <span class="win-prob-graph-percentage">${homeProb.toFixed(1)}%</span>
+                            ${homeLogo ? `<img src="${homeLogo}" alt="${homeTeam}" class="win-prob-graph-logo" onerror="this.style.display='none'">` : ''}
                         </div>
                     </div>
                     <svg class="win-prob-graph" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
@@ -723,6 +1985,7 @@
         }
         
         function switchTab(tabName, gameId) {
+            // Update tab styles
             document.querySelectorAll('.tab').forEach(tab => {
                 tab.classList.remove('active');
             });
@@ -730,76 +1993,702 @@
                 content.classList.remove('active');
             });
             
-            event.target.classList.add('active');
-            document.getElementById(`${tabName}-tab`).classList.add('active');
+            // Activate clicked tab
+            const clickedTab = document.getElementById(`${tabName}-tab`);
+            if (clickedTab) {
+                clickedTab.classList.add('active');
+            }
+            
+            // Show corresponding content
+            const content = document.getElementById(`${tabName}-content`);
+            if (content) {
+                content.classList.add('active');
+            }
 
-            if (tabName === 'playbyplay') {
+            if (tabName === 'feed') {
+                // Always refresh the feed when clicking on the feed tab, especially for live games
                 const feed = document.getElementById('playbyplay-feed');
-                if (feed && (!feed.innerHTML.trim() || feed.innerHTML.includes('spinner'))) {
-                    loadPlayByPlay(gameId);
+                if (feed) {
+                    // If we have cached data, use it immediately, otherwise load fresh
+                    if (liveGamesFeedCache[gameId] && liveGamesFeedCache[gameId].events) {
+                        const cached = liveGamesFeedCache[gameId];
+                        renderFeedEvents(cached.events, cached.homeTeam, cached.awayTeam, cached.homeLogo, cached.awayLogo, cached.isLive !== undefined ? cached.isLive : currentGameIsLive, gameId);
+                        // Also trigger a background update
+                        if (currentGameIsLive) {
+                            updateGameFeedCache(gameId);
+                        }
+                    } else {
+                        // Use stored team info and live status
+                        loadPlayByPlay(gameId, currentHomeTeam, currentAwayTeam, currentHomeLogo, currentAwayLogo, currentGameIsLive);
+                    }
                 }
+                // Check power play status when switching to feed tab (in case element wasn't available before)
+                if (currentGameIsLive) {
+                    loadPowerPlayStatus(gameId);
+                }
+            } else if (tabName === 'game') {
+                loadGameStats(gameId);
+            } else if (tabName === 'away-team') {
+                loadTeamPlayerStats(gameId, 'away');
+            } else if (tabName === 'home-team') {
+                loadTeamPlayerStats(gameId, 'home');
+            }
+        }
+        
+        async function loadGameStats(gameId) {
+            const container = document.getElementById('game-stats-container');
+            if (!container) return;
+            
+            container.innerHTML = '<div class="spinner"></div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/v1/games/${gameId}/stats`);
+                const data = await response.json();
+                
+                if (response.ok && data.stats) {
+                    const stats = data.stats;
+                    const homeTeam = data.home_team;
+                    const awayTeam = data.away_team;
+                    
+                    // Function to create a stat row with bar graph
+                    // Away team on LEFT, Home team on RIGHT
+                    function createStatRow(statName, homeValue, awayValue, displayName = null, homeLogo = '', awayLogo = '') {
+                        const total = homeValue + awayValue;
+                        const homePercent = total > 0 ? (homeValue / total * 100) : 50;
+                        const awayPercent = total > 0 ? (awayValue / total * 100) : 50;
+                        const label = displayName || statName.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                        
+                        return `
+                            <div class="stat-row">
+                                <div class="stat-value-left-container">
+                                    ${awayLogo ? `<img src="${awayLogo}" alt="Away" class="stat-team-logo" onerror="this.style.display='none'">` : ''}
+                                    <div class="stat-value stat-value-left">${awayValue}</div>
+                                </div>
+                                <div class="stat-label">${label}</div>
+                                <div class="stat-value-right-container">
+                                    <div class="stat-value stat-value-right">${homeValue}</div>
+                                    ${homeLogo ? `<img src="${homeLogo}" alt="Home" class="stat-team-logo" onerror="this.style.display='none'">` : ''}
+                                </div>
+                                <div class="stat-bar-container">
+                                    <div class="stat-bar stat-bar-away" style="width: ${awayPercent}%"></div>
+                                    <div class="stat-bar stat-bar-home" style="width: ${homePercent}%"></div>
+                                </div>
+                            </div>
+                        `;
+                    }
+                    
+                    container.innerHTML = `
+                        <div class="game-stats-header">
+                            <h2>Head-to-head</h2>
+                        </div>
+                        <div class="game-stats-body">
+                            ${createStatRow('shots', stats.shots.home, stats.shots.away, 'Shots', homeTeam.logo, awayTeam.logo)}
+                            ${createStatRow('hits', stats.hits.home, stats.hits.away, 'Hits', homeTeam.logo, awayTeam.logo)}
+                            ${createStatRow('faceoff_win_pct', stats.faceoff_win_pct.home, stats.faceoff_win_pct.away, 'Face-off win %', homeTeam.logo, awayTeam.logo)}
+                            ${createStatRow('penalty_minutes', stats.penalty_minutes.home, stats.penalty_minutes.away, 'Penalty minutes', homeTeam.logo, awayTeam.logo)}
+                            ${createStatRow('power_play_pct', stats.power_play_pct.home, stats.power_play_pct.away, 'Power play %', homeTeam.logo, awayTeam.logo)}
+                            ${createStatRow('power_play_opportunities', stats.power_play_opportunities.home, stats.power_play_opportunities.away, 'Power play opportunities', homeTeam.logo, awayTeam.logo)}
+                            ${createStatRow('blocked_shots', stats.blocked_shots.home, stats.blocked_shots.away, 'Blocked shots', homeTeam.logo, awayTeam.logo)}
+                            ${createStatRow('takeaways', stats.takeaways.home, stats.takeaways.away, 'Takeaways', homeTeam.logo, awayTeam.logo)}
+                            ${createStatRow('giveaways', stats.giveaways.home, stats.giveaways.away, 'Giveaways', homeTeam.logo, awayTeam.logo)}
+                        </div>
+                    `;
+                } else {
+                    container.innerHTML = '<div style="color: #aaaaaa; text-align: center; padding: 40px;">Error loading game stats.</div>';
+                }
+            } catch (error) {
+                container.innerHTML = `<div style="color: #ee8888; text-align: center; padding: 40px;">Error: ${error.message}</div>`;
             }
         }
 
-        async function loadPlayByPlay(gameId, homeTeam, awayTeam) {
-            const feed = document.getElementById('playbyplay-feed');
-            if (!feed) return;
-
-            feed.innerHTML = '<div class="spinner"></div>';
-
+        async function loadTeamPlayerStats(gameId, team) {
+            const containerId = team === 'away' ? 'away-team-stats-container' : 'home-team-stats-container';
+            const container = document.getElementById(containerId);
+            if (!container) return;
+            
+            container.innerHTML = '<div class="spinner"></div>';
+            
             try {
-                const response = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=50`);
+                const response = await fetch(`${API_BASE}/v1/games/${gameId}/player-stats`);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error(`Player stats API error: ${response.status} ${response.statusText}`, errorText);
+                    container.innerHTML = `<div style="color: #ee8888; text-align: center; padding: 40px;">Error loading player stats: ${response.status} ${response.statusText}</div>`;
+                    return;
+                }
+                
                 const data = await response.json();
-
-                if (response.ok && data.events) {
-                    if (data.events.length === 0) {
-                        feed.innerHTML = '<div style="color: #aaaaaa; text-align: center; padding: 40px;">No events yet. Start ingestion to see play-by-play.</div>';
-                        return;
-                    }
-
-                    const mostRecentTime = data.events[0]?.timestamp || Date.now() / 1000;
-
-                    feed.innerHTML = data.events.map((event, index) => {
-                        const timeAgo = Math.round((mostRecentTime - event.timestamp) / 60);
-                        const timeStr = timeAgo === 0 ? 'Just now' : `${timeAgo}m ago`;
-                        const playerInitials = event.player ? event.player.split(' ').map(n => n[0]).join('').substring(0, 2) : '?';
-                        const strengthClass = event.strength || 'EV';
-                        
-                        // Format period and time
-                        const period = event.period || 1;
-                        const timeInPeriod = event.time_in_period || '00:00';
-                        const periodTime = `P${period} ${timeInPeriod}`;
+                
+                if (data && data.away_team && data.home_team) {
+                    const teamData = team === 'away' ? data.away_team : data.home_team;
+                    const skaters = teamData.skaters || [];
+                    const goalies = teamData.goalies || [];
+                    
+                    // Function to render a skater row
+                    function renderSkaterRow(player) {
+                        const stats = player.stats || {};
+                        const plusMinus = stats.plus_minus || 0;
+                        const plusMinusClass = plusMinus > 0 ? 'plus-minus-positive' : plusMinus < 0 ? 'plus-minus-negative' : '';
                         
                         return `
-                            <div class="playbyplay-event">
-                                <div class="event-player-avatar">${playerInitials}</div>
-                                <div class="event-content">
-                                    <div class="event-header">
-                                        <span>${event.home_score} - ${event.away_score}</span>
-                                        <span>${periodTime}</span>
+                            <div class="player-stat-row">
+                                <div class="player-info">
+                                    ${player.headshot ? `<img src="${player.headshot}" alt="${player.name}" class="player-headshot" onerror="this.style.display='none'">` : '<div class="player-headshot-placeholder"></div>'}
+                                    <div class="player-name-info">
+                                        <div class="player-name">${player.name || 'Unknown'}</div>
+                                        <div class="player-position">${player.position || ''}</div>
                                     </div>
-                                    <div class="event-description">
-                                        ${event.description}
+                                </div>
+                                <div class="player-stats-grid">
+                                    <div class="stat-item">
+                                        <div class="stat-value">${stats.pts || 0}</div>
+                                        <div class="stat-label">PTS</div>
                                     </div>
-                                    <div class="event-player">
-                                        ${event.player || 'Unknown Player'}
+                                    <div class="stat-item">
+                                        <div class="stat-value">${stats.goals || 0}</div>
+                                        <div class="stat-label">GOAL</div>
+                                    </div>
+                                    <div class="stat-item">
+                                        <div class="stat-value">${stats.assists || 0}</div>
+                                        <div class="stat-label">AST</div>
+                                    </div>
+                                    <div class="stat-item">
+                                        <div class="stat-value ${plusMinusClass}">${plusMinus >= 0 ? '+' : ''}${plusMinus}</div>
+                                        <div class="stat-label">+/-</div>
+                                    </div>
+                                    <div class="stat-item">
+                                        <div class="stat-value">${stats.pim || 0}</div>
+                                        <div class="stat-label">PIM</div>
+                                    </div>
+                                    <div class="stat-item">
+                                        <div class="stat-value">${stats.sog || 0}</div>
+                                        <div class="stat-label">SOG</div>
+                                    </div>
+                                    <div class="stat-item">
+                                        <div class="stat-value">${stats.hits || 0}</div>
+                                        <div class="stat-label">HITS</div>
+                                    </div>
+                                    <div class="stat-item">
+                                        <div class="stat-value">${stats.toi || '0:00'}</div>
+                                        <div class="stat-label">TOI</div>
                                     </div>
                                 </div>
                             </div>
                         `;
-                    }).join('');
+                    }
+                    
+                    // Function to render a goalie row
+                    function renderGoalieRow(player) {
+                        const stats = player.stats || {};
+                        
+                        return `
+                            <div class="player-stat-row">
+                                <div class="player-info">
+                                    ${player.headshot ? `<img src="${player.headshot}" alt="${player.name}" class="player-headshot" onerror="this.style.display='none'">` : '<div class="player-headshot-placeholder"></div>'}
+                                    <div class="player-name-info">
+                                        <div class="player-name">${player.name || 'Unknown'}</div>
+                                        <div class="player-position">${player.position || 'G'}</div>
+                                    </div>
+                                </div>
+                                <div class="player-stats-grid goalie-stats">
+                                    <div class="stat-item">
+                                        <div class="stat-value">${stats.toi || '0:00'}</div>
+                                        <div class="stat-label">TOI</div>
+                                    </div>
+                                    <div class="stat-item">
+                                        <div class="stat-value">${stats.saves_shots || '0/0'}</div>
+                                        <div class="stat-label">SV/S</div>
+                                    </div>
+                                    <div class="stat-item">
+                                        <div class="stat-value">${stats.sv_pct || 0}%</div>
+                                        <div class="stat-label">SV%</div>
+                                    </div>
+                                    <div class="stat-item">
+                                        <div class="stat-value">${stats.pp_saves_shots || '0/0'}</div>
+                                        <div class="stat-label">PP/S</div>
+                                    </div>
+                                    <div class="stat-item">
+                                        <div class="stat-value">${stats.sh_saves_shots || '0/0'}</div>
+                                        <div class="stat-label">SH/S</div>
+                                    </div>
+                                    <div class="stat-item">
+                                        <div class="stat-value">${stats.pim || 0}</div>
+                                        <div class="stat-label">PIM</div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }
+                    
+                    let html = '<div class="team-player-stats">';
+                    
+                    // Render goalies first
+                    if (goalies.length > 0) {
+                        goalies.forEach(goalie => {
+                            html += renderGoalieRow(goalie);
+                        });
+                    }
+                    
+                    // Then render skaters
+                    if (skaters.length > 0) {
+                        skaters.forEach(skater => {
+                            html += renderSkaterRow(skater);
+                        });
+                    }
+                    
+                    if (goalies.length === 0 && skaters.length === 0) {
+                        html += '<div style="color: #aaaaaa; text-align: center; padding: 40px;">No player stats available.</div>';
+                    }
+                    
+                    html += '</div>';
+                    container.innerHTML = html;
                 } else {
-                    feed.innerHTML = '<div style="color: #aaaaaa; text-align: center; padding: 40px;">Error loading play-by-play.</div>';
+                    container.innerHTML = '<div style="color: #aaaaaa; text-align: center; padding: 40px;">Error loading player stats.</div>';
                 }
             } catch (error) {
-                feed.innerHTML = `<div style="color: #ee8888; text-align: center; padding: 40px;">Error: ${error.message}</div>`;
+                console.error('Error loading team player stats:', error);
+                container.innerHTML = `<div style="color: #ee8888; text-align: center; padding: 40px;">Error: ${error.message}</div>`;
+            }
+        }
+
+        // Track rendered event IDs to prevent unnecessary re-renders
+        let renderedEventIds = new Set();
+        let lastRenderedEventCount = 0;
+        let lastPenaltyCount = 0; // Track penalty count to detect new penalties
+        
+        // Helper function to render feed events (used by both cached and fresh data)
+        function renderFeedEvents(events, homeTeam, awayTeam, homeLogo, awayLogo, isLive, gameId, gameStateFromAPI = null) {
+            const feed = document.getElementById('playbyplay-feed');
+            if (!feed) {
+                console.error('[Feed] Feed element not found');
+                return;
+            }
+            
+            // Load power play status
+            loadPowerPlayStatus(gameId);
+            
+            if (!events || events.length === 0) {
+                console.log(`[Feed] No events to render for ${gameId}`);
+                const message = isLive 
+                    ? '<div style="color: #aaaaaa; text-align: center; padding: 40px;">No events yet. Play-by-play will appear here once the game starts.</div>'
+                    : '<div style="color: #aaaaaa; text-align: center; padding: 40px;">No events yet. Start ingestion to see play-by-play.</div>';
+                feed.innerHTML = message;
+                renderedEventIds.clear();
+                lastRenderedEventCount = 0;
+                return;
+            }
+
+            const mostRecentTime = events[0]?.timestamp || Date.now() / 1000;
+            const maxPeriod = Math.max(...events.map(e => e.period || 1));
+            // Use game state from API if provided, otherwise infer from isLive
+            const gameState = gameStateFromAPI || (isLive ? 'LIVE' : 'OFF');
+            const isFinal = gameState === 'OFF' || gameState === 'FINAL';
+            
+            // Filter events: keep crucial events (GOAL, PENALTY) ALWAYS
+            const crucialEventTypes = ['GOAL', 'PENALTY'];
+            
+            // Deduplicate events by ID (backend should already deduplicate, but do it here too for safety)
+            const seenIds = new Set();
+            const uniqueEvents = [];
+            for (const event of events) {
+                const eventId = event.id;
+                if (eventId && !seenIds.has(eventId)) {
+                    seenIds.add(eventId);
+                    uniqueEvents.push(event);
+                } else if (!eventId) {
+                    // If no ID, create one for deduplication
+                    const dedupKey = `${event.timestamp}-${event.event_type}-${event.player_id}-${event.period}-${event.time_in_period}`;
+                    if (!seenIds.has(dedupKey)) {
+                        seenIds.add(dedupKey);
+                        event.id = `${gameId}-${uniqueEvents.length}`;
+                        uniqueEvents.push(event);
+                    }
+                }
+            }
+            
+            // Backend already sorts and filters events correctly, so we should trust what it sends
+            // For completed games, backend sends only crucial events
+            // For live games, backend sends all crucial + 4 most recent non-crucial
+            // Backend already sorts by timestamp descending, so we just use the events as-is
+            // Only sort if we need to (shouldn't be necessary, but ensure order is correct)
+            let filteredEvents = uniqueEvents;
+            // Double-check sorting by timestamp (most recent first) with event ID as tiebreaker
+            filteredEvents.sort((a, b) => {
+                const tsA = a.timestamp || 0;
+                const tsB = b.timestamp || 0;
+                if (tsB !== tsA) {
+                    return tsB - tsA; // Descending order (most recent first)
+                }
+                // If timestamps are equal, use ID for stable sort
+                const idA = a.id || '';
+                const idB = b.id || '';
+                return idB.localeCompare(idA);
+            });
+
+            if (filteredEvents.length === 0) {
+                console.warn(`[Feed] No filtered events to display for ${gameId}`);
+                const message = isLive 
+                    ? '<div style="color: #aaaaaa; text-align: center; padding: 40px;">No events yet. Play-by-play will appear here once the game starts.</div>'
+                    : '<div style="color: #aaaaaa; text-align: center; padding: 40px;">No events yet. Start ingestion to see play-by-play.</div>';
+                feed.innerHTML = message;
+                renderedEventIds.clear();
+                lastRenderedEventCount = 0;
+                return;
+            }
+            
+            // Check if we need to update: if event count changed or if this is a different game
+            const currentEventIds = new Set(filteredEvents.map(e => e.id).filter(Boolean));
+            const eventCountChanged = filteredEvents.length !== lastRenderedEventCount;
+            const hasNewEvents = [...currentEventIds].some(id => !renderedEventIds.has(id));
+            
+            // Only re-render if:
+            // 1. Event count changed (new events added or removed)
+            // 2. We have new event IDs that aren't already rendered
+            // 3. This is the first render (renderedEventIds is empty)
+            const shouldRerender = renderedEventIds.size === 0 || eventCountChanged || hasNewEvents;
+            
+            if (!shouldRerender) {
+                // No changes needed, skip re-render to preserve DOM and scroll position
+                return;
+            }
+            
+            // Preserve scroll position if user has scrolled down
+            const wasScrolledDown = feed.scrollTop > 100;
+            const previousScrollTop = feed.scrollTop;
+            
+            feed.innerHTML = filteredEvents.map((event, index) => {
+                const timeAgo = Math.round((mostRecentTime - event.timestamp) / 60);
+                const timeStr = timeAgo === 0 ? 'Just now' : `${timeAgo}m ago`;
+                const playerInitials = event.player ? event.player.split(' ').map(n => n[0]).join('').substring(0, 2) : '?';
+                
+                // Format period and time remaining
+                const period = event.period || 1;
+                const timeInPeriod = event.time_in_period || '00:00';
+                
+                // Format period number (1st, 2nd, 3rd, OT, etc.)
+                let periodLabel;
+                if (period === 1) {
+                    periodLabel = '1st';
+                } else if (period === 2) {
+                    periodLabel = '2nd';
+                } else if (period === 3) {
+                    periodLabel = '3rd';
+                } else if (period === 4) {
+                    periodLabel = 'OT';
+                } else {
+                    periodLabel = `${period}th`;
+                }
+                
+                // Convert time elapsed to time remaining
+                // timeInPeriod is elapsed time in MM:SS format (e.g., "00:30" = 30 seconds elapsed)
+                // We need to convert to time remaining
+                let timeRemaining;
+                if (timeInPeriod && timeInPeriod !== '00:00') {
+                    const [elapsedMinutes, elapsedSeconds] = timeInPeriod.split(':').map(Number);
+                    const elapsedTotalSeconds = elapsedMinutes * 60 + elapsedSeconds;
+                    
+                    // Determine period length: 20 minutes (1200 seconds) for regulation, 5 minutes (300 seconds) for OT
+                    const periodLengthSeconds = (period <= 3) ? 1200 : 300;
+                    const remainingTotalSeconds = Math.max(0, periodLengthSeconds - elapsedTotalSeconds);
+                    
+                    const remainingMinutes = Math.floor(remainingTotalSeconds / 60);
+                    const remainingSecs = remainingTotalSeconds % 60;
+                    timeRemaining = `${remainingMinutes}:${remainingSecs.toString().padStart(2, '0')}`;
+                } else {
+                    // If time is 00:00, show full period time remaining
+                    timeRemaining = (period <= 3) ? '20:00' : '5:00';
+                }
+                
+                // Format: "1st 19:50" or "OT 4:30"
+                const periodTime = `${periodLabel} ${timeRemaining}`;
+                
+                const avatarContent = event.player_headshot 
+                    ? `<img src="${event.player_headshot}" alt="${event.player || 'Player'}" class="event-player-headshot" onerror="this.parentElement.textContent='${playerInitials}'">`
+                    : playerInitials;
+                
+                const isGoal = event.event_type === 'GOAL';
+                const scoringTeam = event.team;
+                const homeScoreBold = (isGoal && scoringTeam === 'HOME') ? 'font-weight: bold;' : '';
+                const awayScoreBold = (isGoal && scoringTeam === 'AWAY') ? 'font-weight: bold;' : '';
+                
+                const homeLogoHtml = homeLogo ? `<img src="${homeLogo}" alt="${homeTeam}" class="event-score-logo" onerror="this.style.display='none'">` : '';
+                const awayLogoHtml = awayLogo ? `<img src="${awayLogo}" alt="${awayTeam}" class="event-score-logo" onerror="this.style.display='none'">` : '';
+                
+                const scoreDisplay = `
+                    <span class="event-score-container">
+                        ${homeLogoHtml}
+                        <span style="${homeScoreBold}">${event.home_score}</span>
+                        <span class="event-score-dash">-</span>
+                        <span style="${awayScoreBold}">${event.away_score}</span>
+                        ${awayLogoHtml}
+                    </span>
+                `;
+                
+                return `
+                    <div class="playbyplay-event ${isGoal ? 'goal-event' : ''}">
+                        <div class="event-player-avatar">${avatarContent}</div>
+                        <div class="event-content">
+                            <div class="event-header">
+                                <span>${scoreDisplay}</span>
+                                <span>${periodTime}</span>
+                            </div>
+                            <div class="event-description">
+                                ${event.description || event.event_type || 'Event'}
+                            </div>
+                            ${event.player ? `<div class="event-player">${event.player}</div>` : (event.player_id ? `<div class="event-player">Player ${event.player_id}</div>` : '')}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            // Update tracking variables
+            renderedEventIds = new Set(filteredEvents.map(e => e.id).filter(Boolean));
+            lastRenderedEventCount = filteredEvents.length;
+            lastEventCount = filteredEvents.length;
+            lastGoalCount = filteredEvents.filter(e => e.event_type === 'GOAL').length;
+            
+            // Preserve scroll position if user was scrolled down, otherwise scroll to top
+            if (wasScrolledDown && previousScrollTop > 0) {
+                // User was viewing older events, try to restore scroll position
+                // Use requestAnimationFrame to ensure DOM is updated
+                requestAnimationFrame(() => {
+                    feed.scrollTop = previousScrollTop;
+                });
+            } else {
+                // User was at the top, scroll to top to show latest events
+                feed.scrollTop = 0;
+            }
+            
+            // Set up event-driven power play checking (no constant polling)
+            if (isLive) {
+                // Count current penalties
+                const currentPenaltyCount = filteredEvents.filter(e => e.event_type === 'PENALTY').length;
+                
+                // Only check power play status if:
+                // 1. This is the first render (lastPenaltyCount is 0)
+                // 2. A new penalty was detected (penalty count increased)
+                // 3. Penalty count changed (penalty expired or new one started)
+                if (lastPenaltyCount === 0 || currentPenaltyCount !== lastPenaltyCount) {
+                    // Check power play status when a penalty is detected or count changes
+                    loadPowerPlayStatus(gameId);
+                    lastPenaltyCount = currentPenaltyCount;
+                }
+                
+                // No constant polling - only check when penalties change
+            } else {
+                stopPlayByPlayPolling();
+                stopPowerPlayPolling();
+                lastEventCount = 0;
+                lastGoalCount = 0;
+                lastPenaltyCount = 0;
+            }
+        }
+
+        async function loadPowerPlayStatus(gameId) {
+            const powerPlayDisplay = document.getElementById('powerplay-display');
+            if (!powerPlayDisplay) {
+                // Silently return - element might not exist if not on feed tab
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/v1/games/${gameId}/powerplay`);
+                const data = await response.json();
+                
+                if (response.ok && data.is_powerplay && data.time_remaining && data.time_remaining > 0) {
+                    // Format time remaining as :SS (e.g., :25)
+                    const seconds = Math.floor(data.time_remaining % 60);
+                    const timeStr = `:${seconds.toString().padStart(2, '0')} remaining`;
+                    
+                    // Get strength (e.g., "5 on 4")
+                    const strength = data.strength || "5 on 4";
+                    
+                    const logoHtml = data.team_logo 
+                        ? `<img src="${data.team_logo}" alt="Power Play Team" class="powerplay-logo" onerror="this.style.display='none'">`
+                        : '';
+                    
+                    // Display only time remaining
+                    const timeDisplay = timeStr;
+                    
+                    powerPlayDisplay.innerHTML = `
+                        <div class="powerplay-container">
+                            ${logoHtml}
+                            <div class="powerplay-text">${strength}, ${timeDisplay}</div>
+                        </div>
+                    `;
+                    powerPlayDisplay.style.display = 'block';
+                    powerPlayDisplay.style.visibility = 'visible';
+                } else {
+                    // Hide power play display if no active power play
+                    powerPlayDisplay.style.display = 'none';
+                    powerPlayDisplay.innerHTML = '';
+                }
+            } catch (error) {
+                // Silently handle errors - don't spam console
+                powerPlayDisplay.style.display = 'none';
+            }
+        }
+
+        async function loadPlayByPlay(gameId, homeTeam, awayTeam, homeLogo = '', awayLogo = '', isLive = false) {
+            const feed = document.getElementById('playbyplay-feed');
+            if (!feed) return;
+
+            // If this is a live game and background polling isn't started, start it
+            if (isLive && !liveGamesPolling[gameId]) {
+                // Start background polling for this game
+                const gameData = {
+                    game_id: gameId,
+                    home_team_name: homeTeam,
+                    away_team_name: awayTeam,
+                    home_team_logo: homeLogo,
+                    away_team_logo: awayLogo,
+                    game_state: 'LIVE'
+                };
+                startGameFeedPolling(gameId, gameData);
+            }
+
+            // Always fetch fresh data immediately when clicking on a game (ensure it's up-to-date)
+            // Show cached data first for instant display, then update with fresh data
+            let useCache = false;
+            if (liveGamesFeedCache[gameId] && liveGamesFeedCache[gameId].events) {
+                // Use cached data for instant display
+                const cached = liveGamesFeedCache[gameId];
+                homeTeam = cached.homeTeam || homeTeam;
+                awayTeam = cached.awayTeam || awayTeam;
+                homeLogo = cached.homeLogo || homeLogo;
+                awayLogo = cached.awayLogo || awayLogo;
+                
+                                // Render cached events immediately
+                                const cachedIsLive = cached.isLive !== undefined ? cached.isLive : isLive;
+                                renderFeedEvents(cached.events, homeTeam, awayTeam, homeLogo, awayLogo, cachedIsLive, gameId, cached.gameState);
+                useCache = true;
+            }
+            
+            // Always fetch fresh data in background to ensure it's up-to-date
+            updateGameFeedCache(gameId);
+            
+            // If we didn't use cache, load normally
+            if (!useCache) {
+                // No cached data, load normally
+                // Load power play status
+                loadPowerPlayStatus(gameId);
+
+                // Only show spinner if feed is empty or doesn't have events yet
+                if (!feed.innerHTML || feed.innerHTML.includes('spinner') || feed.innerHTML.includes('No events')) {
+                    feed.innerHTML = '<div class="spinner"></div>';
+                }
+
+                try {
+                    const response = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=50`);
+                    if (!response.ok) {
+                        console.error(`[Feed] Failed to load play-by-play: ${response.status}`);
+                        feed.innerHTML = '<div style="color: #ee8888; text-align: center; padding: 40px;">Error loading play-by-play data</div>';
+                        return;
+                    }
+                    
+                    const data = await response.json();
+                    console.log(`[Feed] Loaded play-by-play for ${gameId}:`, {
+                        hasEvents: !!data.events,
+                        eventCount: data.events?.length || 0,
+                        gameState: data.game_state
+                    });
+
+                    if (data.events !== undefined) {
+                        // Cache the feed data for this game
+                        if (!liveGamesFeedCache[gameId]) {
+                            liveGamesFeedCache[gameId] = {};
+                        }
+                        liveGamesFeedCache[gameId].events = data.events || [];
+                        liveGamesFeedCache[gameId].homeTeam = homeTeam;
+                        liveGamesFeedCache[gameId].awayTeam = awayTeam;
+                        liveGamesFeedCache[gameId].homeLogo = homeLogo;
+                        liveGamesFeedCache[gameId].awayLogo = awayLogo;
+                        liveGamesFeedCache[gameId].isLive = isLive;
+                        liveGamesFeedCache[gameId].gameState = data.game_state || null;
+                        liveGamesFeedCache[gameId].lastEventCount = data.events ? data.events.length : 0;
+                        liveGamesFeedCache[gameId].lastGoalCount = data.events ? data.events.filter(e => e.event_type === 'GOAL').length : 0;
+                        liveGamesFeedCache[gameId].lastUpdate = Date.now();
+                        
+                        // Render the events
+                        renderFeedEvents(data.events || [], homeTeam, awayTeam, homeLogo, awayLogo, isLive, gameId, data.game_state);
+                    } else if (data.events && data.events.length === 0) {
+                        // Show appropriate message based on whether game is live or not
+                        const message = isLive 
+                            ? '<div style="color: #aaaaaa; text-align: center; padding: 40px;">No events yet. Play-by-play will appear here once the game starts.</div>'
+                            : '<div style="color: #aaaaaa; text-align: center; padding: 40px;">No events yet. Start ingestion to see play-by-play.</div>';
+                        feed.innerHTML = message;
+                        // Polling is already started by startGameFeedPolling above
+                        return;
+                    } else {
+                        const errorMessage = isLive
+                            ? '<div style="color: #aaaaaa; text-align: center; padding: 40px;">Error loading play-by-play. Retrying...</div>'
+                            : '<div style="color: #aaaaaa; text-align: center; padding: 40px;">Error loading play-by-play.</div>';
+                        feed.innerHTML = errorMessage;
+                        // Polling is already started by startGameFeedPolling above
+                    }
+                } catch (error) {
+                    feed.innerHTML = `<div style="color: #ee8888; text-align: center; padding: 40px;">Error: ${error.message}</div>`;
+                    // Polling is already started by startGameFeedPolling above
+                }
+            }
+        }
+        
+        // Load standings
+        async function loadStandings() {
+            const container = document.getElementById('standingsContainer');
+            if (!container) return;
+            
+            container.innerHTML = '<div class="spinner"></div>';
+            
+            try {
+                const response = await fetch(`${API_BASE}/v1/standings`);
+                const data = await response.json();
+                
+                if (response.ok && data.standings && data.standings.length > 0) {
+                    container.innerHTML = `
+                        <div class="standings-table">
+                            <div class="standings-header">
+                                <div class="standings-rank">#</div>
+                                <div class="standings-team">Team</div>
+                                <div class="standings-gp">GP</div>
+                                <div class="standings-w">W</div>
+                                <div class="standings-l">L</div>
+                                <div class="standings-otl">OTL</div>
+                                <div class="standings-pts">PTS</div>
+                            </div>
+                            ${data.standings.map((team, index) => `
+                                <div class="standings-row">
+                                    <div class="standings-rank">${index + 1}</div>
+                                    <div class="standings-team">
+                                        ${team.logo ? `<img src="${team.logo}" alt="${team.full_name}" class="standings-logo" onerror="this.style.display='none'">` : ''}
+                                        <span class="standings-team-name">${team.abbreviation}</span>
+                                    </div>
+                                    <div class="standings-gp">${team.games_played}</div>
+                                    <div class="standings-w">${team.wins}</div>
+                                    <div class="standings-l">${team.losses}</div>
+                                    <div class="standings-otl">${team.ot_losses}</div>
+                                    <div class="standings-pts">${team.points}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `;
+                } else {
+                    container.innerHTML = '<div style="color: #aaaaaa; text-align: center; padding: 20px;">No standings data available</div>';
+                }
+            } catch (error) {
+                console.error('Error loading standings:', error);
+                container.innerHTML = '<div style="color: #ee8888; text-align: center; padding: 20px;">Error loading standings</div>';
             }
         }
 
         // Initialize on page load
         window.addEventListener('DOMContentLoaded', async function() {
             initDateSelector();
-            await loadGamesList();
+            // Load games for today's date based on client's system date
+            const today = new Date();
+            await loadGamesList(today);
+            await loadStandings();
         });
     </script>
 </body>
