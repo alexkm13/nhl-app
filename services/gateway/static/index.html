@@ -1536,6 +1536,146 @@
                 console.error('Error fetching win probability history:', error);
             }
             
+            // If history data is sparse or missing, generate probability points from game events
+            // This ensures the graph shows changes even if database predictions are limited
+            if (historyData.length < 10) {
+                try {
+                    // Fetch play-by-play to generate probability points from game events
+                    const playByPlayResponse = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay`);
+                    if (playByPlayResponse.ok) {
+                        const playByPlayData = await playByPlayResponse.json();
+                        const events = playByPlayData.events || [];
+                        
+                        // Filter for crucial events (goals, major score changes)
+                        const crucialEvents = events.filter(e => e.event_type === 'GOAL' || e.event_type === 'PENALTY');
+                        
+                        // Generate probability points at these events
+                        // We'll use a simple calculation: probability changes based on score differential and time
+                        let homeScore = 0;
+                        let awayScore = 0;
+                        let gameTime = 0;
+                        const generatedPoints = [];
+                        
+                        // Add initial point at game start (50/50)
+                        generatedPoints.push({ ts: 0, p_home_win: 0.5 });
+                        
+                        // Process events chronologically (oldest first)
+                        // Events come from backend most recent first, so we need to sort chronologically
+                        // time_in_period from play-by-play events is TIME REMAINING, not elapsed
+                        // More remaining = earlier in period, less remaining = later in period
+                        const sortedEvents = [...crucialEvents].sort((a, b) => {
+                            // Sort by period (ascending), then by time_in_period (descending for remaining time)
+                            if (a.period !== b.period) return a.period - b.period;
+                            // Convert time_in_period from MM:SS to seconds for comparison
+                            // time_in_period is REMAINING time, so larger = more remaining = earlier in period
+                            const aTime = a.time_in_period ? (parseInt(a.time_in_period.split(':')[0]) * 60 + parseInt(a.time_in_period.split(':')[1]) || 0) : 0;
+                            const bTime = b.time_in_period ? (parseInt(b.time_in_period.split(':')[0]) * 60 + parseInt(b.time_in_period.split(':')[1]) || 0) : 0;
+                            return bTime - aTime; // Descending order (most remaining = oldest first)
+                        });
+                        
+                        // Calculate game time and probability for each event
+                        for (const event of sortedEvents) {
+                            // Update score BEFORE calculating probability (so probability reflects score after this goal)
+                            if (event.event_type === 'GOAL') {
+                                if (event.team === 'HOME') {
+                                    homeScore++;
+                                } else {
+                                    awayScore++;
+                                }
+                            }
+                            
+                            // Calculate game time in seconds
+                            const period = event.period || 1;
+                            const timeInPeriod = event.time_in_period || '20:00';
+                            const [minutes, secs] = timeInPeriod.split(':').map(Number);
+                            const timeInPeriodSeconds = minutes * 60 + (secs || 0);
+                            
+                            // time_in_period is TIME REMAINING in period, so convert to elapsed
+                            const periodLength = period <= 3 ? 1200 : 300; // 20 min for regulation, 5 min for OT
+                            const elapsedInPeriod = Math.max(0, periodLength - timeInPeriodSeconds);
+                            
+                            // Total game time (elapsed from game start)
+                            if (period <= 3) {
+                                gameTime = (period - 1) * 1200 + elapsedInPeriod;
+                            } else {
+                                gameTime = 3600 + (period - 4) * 300 + elapsedInPeriod;
+                            }
+                            
+                            // Calculate probability based on score differential and time remaining
+                            const scoreDiff = homeScore - awayScore;
+                            const timeRemaining = (period <= 3 ? 3600 : 3900) - gameTime;
+                            
+                            // Use simplified calculation that matches backend logic exactly
+                            let prob;
+                            if (scoreDiff === 0) {
+                                prob = 0.5;
+                            } else {
+                                // Calculate total time remaining in seconds
+                                const regulationTimeTotal = 3600; // 60 minutes
+                                const totalTimeRemaining = Math.max(0, timeRemaining);
+                                
+                                // Use the same simple logic as backend's calculate_win_probability
+                                // This ensures consistency with the backend calculation
+                                if (homeScore > awayScore) {
+                                    // Home team is leading
+                                    const leadSize = homeScore - awayScore;
+                                    if (totalTimeRemaining < 300) {
+                                        // Less than 5 minutes remaining
+                                        prob = Math.min(0.95, 0.5 + (leadSize * 0.15));
+                                    } else if (totalTimeRemaining < 600) {
+                                        // Less than 10 minutes remaining
+                                        prob = Math.min(0.90, 0.5 + (leadSize * 0.12));
+                                    } else {
+                                        // More than 10 minutes remaining
+                                        prob = Math.min(0.85, 0.5 + (leadSize * 0.10));
+                                    }
+                                } else {
+                                    // Away team is leading (home is trailing)
+                                    const leadSize = awayScore - homeScore;
+                                    if (totalTimeRemaining < 300) {
+                                        // Less than 5 minutes remaining
+                                        prob = Math.max(0.05, 0.5 - (leadSize * 0.15));
+                                    } else if (totalTimeRemaining < 600) {
+                                        // Less than 10 minutes remaining
+                                        prob = Math.max(0.10, 0.5 - (leadSize * 0.12));
+                                    } else {
+                                        // More than 10 minutes remaining
+                                        prob = Math.max(0.15, 0.5 - (leadSize * 0.10));
+                                    }
+                                }
+                                
+                                // Clamp to reasonable bounds
+                                prob = Math.max(0.05, Math.min(0.95, prob));
+                            }
+                            
+                            generatedPoints.push({ ts: gameTime, p_home_win: prob });
+                        }
+                        
+                        // Merge with existing history data (prefer database data, but fill gaps with generated)
+                        if (generatedPoints.length > 0) {
+                            // If we have database history, use it; otherwise use generated
+                            if (historyData.length > 0) {
+                                // Merge both datasets, preferring database data when timestamps are close
+                                const merged = [...historyData];
+                                for (const genPoint of generatedPoints) {
+                                    // Check if there's a database point close to this time
+                                    const closePoint = historyData.find(h => Math.abs(h.ts - genPoint.ts) < 30);
+                                    if (!closePoint) {
+                                        merged.push(genPoint);
+                                    }
+                                }
+                                historyData = merged.sort((a, b) => a.ts - b.ts);
+                            } else {
+                                // No database history, use generated points
+                                historyData = generatedPoints;
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error generating probability from game events:', error);
+                }
+            }
+            
             // Check if game is final
             let isFinal = false;
             let finalData = null;
@@ -1866,9 +2006,37 @@
                 
                 timeRange = maxDisplayTime - minTime || 1;
                 
+                // Interpolate between points to show smoother changes
+                // Add intermediate points every 30 seconds between major events
+                const interpolatedData = [];
+                for (let i = 0; i < historyData.length; i++) {
+                    interpolatedData.push(historyData[i]);
+                    
+                    // Add intermediate points between this and next point
+                    if (i < historyData.length - 1) {
+                        const current = historyData[i];
+                        const next = historyData[i + 1];
+                        const timeDiff = next.ts - current.ts;
+                        const probDiff = next.p_home_win - current.p_home_win;
+                        
+                        // Add points every 30 seconds if gap is large enough
+                        if (timeDiff > 60) {
+                            const numPoints = Math.floor(timeDiff / 30);
+                            for (let j = 1; j <= numPoints; j++) {
+                                const t = current.ts + (timeDiff * j / (numPoints + 1));
+                                const p = current.p_home_win + (probDiff * j / (numPoints + 1));
+                                interpolatedData.push({ ts: t, p_home_win: p });
+                            }
+                        }
+                    }
+                }
+                
+                // Sort by time to ensure correct order
+                interpolatedData.sort((a, b) => a.ts - b.ts);
+                
                 // Map data points to SVG coordinates
                 // X-axis: 0 seconds (game start) = left, maxTime = right
-                points = historyData.map((d, i) => {
+                points = interpolatedData.map((d, i) => {
                     const x = padding.left + (d.ts - minTime) / timeRange * chartWidth;
                     const y = padding.top + chartHeight - (d.p_home_win * chartHeight);
                     return { x, y };

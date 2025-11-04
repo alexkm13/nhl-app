@@ -1611,14 +1611,20 @@ async def get_player_stats(game_id: str):
                 if isinstance(player, dict) and player.get("playerId"):
                     skater_data = await process_skater(player, "home")
                     if skater_data:
-                        home_skaters.append(skater_data)
+                        # Filter out players with 0 TOI
+                        toi = skater_data.get("stats", {}).get("toi", "0:00")
+                        if toi and toi != "0:00":
+                            home_skaters.append(skater_data)
         
         goalies = home_players_raw.get("goalies", [])
         for player in goalies:
             if isinstance(player, dict) and player.get("playerId"):
                 goalie_data = await process_goalie(player, "home")
                 if goalie_data:
-                    home_goalies.append(goalie_data)
+                    # Filter out goalies with 0 TOI
+                    toi = goalie_data.get("stats", {}).get("toi", "0:00")
+                    if toi and toi != "0:00":
+                        home_goalies.append(goalie_data)
         
         # Process away team players
         away_skaters = []
@@ -1630,14 +1636,20 @@ async def get_player_stats(game_id: str):
                 if isinstance(player, dict) and player.get("playerId"):
                     skater_data = await process_skater(player, "away")
                     if skater_data:
-                        away_skaters.append(skater_data)
+                        # Filter out players with 0 TOI
+                        toi = skater_data.get("stats", {}).get("toi", "0:00")
+                        if toi and toi != "0:00":
+                            away_skaters.append(skater_data)
         
         goalies = away_players_raw.get("goalies", [])
         for player in goalies:
             if isinstance(player, dict) and player.get("playerId"):
                 goalie_data = await process_goalie(player, "away")
                 if goalie_data:
-                    away_goalies.append(goalie_data)
+                    # Filter out goalies with 0 TOI
+                    toi = goalie_data.get("stats", {}).get("toi", "0:00")
+                    if toi and toi != "0:00":
+                        away_goalies.append(goalie_data)
         
         # Sort skaters by points (descending), then goals
         home_skaters.sort(key=lambda x: (x["stats"]["pts"], x["stats"]["goals"]), reverse=True)
