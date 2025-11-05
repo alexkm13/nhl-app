@@ -1,8 +1,10 @@
 import asyncio
 import json
+import logging
 import math
 import os
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 import httpx
@@ -14,9 +16,26 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, ge
 from pydantic import BaseModel
 from redis.asyncio import Redis
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(name)s] %(levelname)s: %(message)s'
+)
+logger = logging.getLogger("gateway")
+
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-app = FastAPI(title="GameCast++ Gateway")
+
+# Lifespan event handler for startup/shutdown (replaces deprecated @app.on_event)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Initialize Redis connection
+    app.state.redis = Redis.from_url(REDIS_URL, decode_responses=True)
+    yield
+    # Shutdown: Close Redis connection
+    await app.state.redis.aclose()
+
+app = FastAPI(title="GameCast++ Gateway", lifespan=lifespan)
 
 # Add CORS middleware
 app.add_middleware(
@@ -29,6 +48,44 @@ app.add_middleware(
 
 # Serve static files
 static_dir = os.path.join(os.path.dirname(__file__), "static")
+
+# Add explicit route for team_colors.json using a different path to avoid mount conflict
+@app.get("/api/team_colors.json")
+async def get_team_colors():
+    """Serve team colors JSON file"""
+    import json
+    team_colors_path = os.path.join(static_dir, "team_colors.json")
+    logger.info(f"[TEAM_COLORS] Looking for team_colors.json at: {team_colors_path}")
+    logger.info(f"[TEAM_COLORS] Static dir exists: {os.path.exists(static_dir)}")
+    logger.info(f"[TEAM_COLORS] File exists: {os.path.exists(team_colors_path)}")
+    if os.path.exists(team_colors_path):
+        try:
+            with open(team_colors_path, "r") as f:
+                data = json.load(f)
+                logger.info(f"[TEAM_COLORS] Successfully loaded team colors: {len(data)} teams")
+                return data
+        except Exception as e:
+            logger.error(f"[TEAM_COLORS] Error loading team colors: {e}")
+            raise HTTPException(status_code=500, detail=f"Error loading team colors: {e}")
+    else:
+        logger.error(f"[TEAM_COLORS] Team colors file not found at: {team_colors_path}")
+        raise HTTPException(status_code=404, detail=f"Team colors file not found at: {team_colors_path}")
+
+# Also add route at /static/team_colors.json for backward compatibility
+# But we'll use FileResponse to bypass the mount
+@app.get("/static/team_colors.json")
+async def get_team_colors_static():
+    """Serve team colors JSON file from static path"""
+    from fastapi.responses import FileResponse
+    team_colors_path = os.path.join(static_dir, "team_colors.json")
+    logger.info(f"[TEAM_COLORS_STATIC] Looking for team_colors.json at: {team_colors_path}")
+    if os.path.exists(team_colors_path):
+        return FileResponse(team_colors_path, media_type="application/json")
+    else:
+        logger.error(f"[TEAM_COLORS_STATIC] Team colors file not found at: {team_colors_path}")
+        raise HTTPException(status_code=404, detail=f"Team colors file not found")
+
+# Now mount static files (this will handle other static files like CSS, JS, etc.)
 if os.path.exists(static_dir):
     from fastapi.staticfiles import StaticFiles
     
@@ -63,25 +120,110 @@ async def fetch_nhl_play_by_play(game_id: str) -> dict:
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f"[gateway] NHL API error {response.status_code} for game {game_id}")
+                logger.error(f"NHL API error {response.status_code} for game {game_id}")
                 return None
     except Exception as e:
-        print(f"[gateway] Error fetching NHL play-by-play for game {game_id}: {e}")
+        logger.error(f"Error fetching NHL play-by-play for game {game_id}: {e}", exc_info=True)
         return None
 
 async def fetch_nhl_boxscore(game_id: str) -> dict:
     """Fetch boxscore data directly from NHL API"""
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=5.0) as client:  # Reduced timeout for faster response
             response = await client.get(f"{NHL_API_BASE}/gamecenter/{game_id}/boxscore")
             if response.status_code == 200:
-                return response.json()
+                data = response.json()
+                logger.debug(f"Successfully fetched boxscore for game {game_id}")
+                return data
             else:
-                print(f"[gateway] NHL API boxscore error {response.status_code} for game {game_id}")
+                logger.error(f"NHL API boxscore error {response.status_code} for game {game_id}")
                 return None
-    except Exception as e:
-        print(f"[gateway] Error fetching NHL boxscore for game {game_id}: {e}")
+    except httpx.TimeoutException:
+        logger.warning(f"Timeout fetching boxscore for game {game_id}")
         return None
+    except Exception as e:
+        logger.error(f"Error fetching NHL boxscore for game {game_id}: {e}", exc_info=True)
+        return None
+
+def calculate_strength(home_skaters: int, away_skaters: int) -> tuple[str, str]:
+    """
+    Calculate strength for both home and away teams based on skater counts.
+    
+    Args:
+        home_skaters: Number of home team skaters (0-6)
+        away_skaters: Number of away team skaters (0-6)
+    
+    Returns:
+        Tuple of (home_strength, away_strength) where each strength is one of:
+        "EV" (even strength), "PP" (power play), "PK" (penalty kill),
+        "EN" (empty net), "ENPP" (empty net + power play)
+    """
+    # Detect empty net situations (6 skaters or 0 skaters = goalie pulled)
+    empty_net = (away_skaters == 6 or home_skaters == 6 or away_skaters == 0 or home_skaters == 0)
+    
+    # Calculate home team's strength
+    if empty_net:
+        if home_skaters == 6:
+            # Home has empty net (6 skaters)
+            if away_skaters < 5:
+                home_strength = "ENPP"  # Empty net + power play (opponent has < 5 skaters)
+            else:
+                home_strength = "EN"  # Empty net even strength (6v5)
+        elif away_skaters == 6:
+            # Away has empty net (6 skaters) - Home is defending
+            # Home can only be 0-5 in this case (if home was 6, we'd be in first if)
+            home_strength = "PK"  # Home is defending against empty net (penalty kill situation)
+        elif home_skaters == 0:
+            # Home goalie pulled (0 skaters) - this shouldn't happen, but handle it
+            home_strength = "PK"
+        elif away_skaters == 0:
+            # Away goalie pulled (0 skaters) - Home has advantage
+            home_strength = "PP"
+        elif home_skaters < 5:
+            home_strength = "PK"  # Home is shorthanded
+        # Note: The else clause was removed as it's unreachable
+        # If empty_net is True and all elifs fail, it means none are 6 or 0, which is impossible
+    elif home_skaters == 5 and away_skaters == 5:
+        home_strength = "EV"
+    elif home_skaters > away_skaters:
+        home_strength = "PP"  # Home has more skaters (power play)
+    elif home_skaters < away_skaters:
+        home_strength = "PK"  # Home has fewer skaters (penalty kill)
+    else:
+        home_strength = "EV"
+    
+    # Calculate away team's strength (opposite perspective)
+    if empty_net:
+        if away_skaters == 6:
+            # Away has empty net (6 skaters)
+            if home_skaters < 5:
+                away_strength = "ENPP"  # Empty net + power play (opponent has < 5 skaters)
+            else:
+                away_strength = "EN"  # Empty net even strength (6v5)
+        elif home_skaters == 6:
+            # Home has empty net (6 skaters) - Away is defending
+            # Away can only be 0-5 in this case (if away was 6, we'd be in first if)
+            away_strength = "PK"  # Away is defending against empty net (penalty kill situation)
+        elif away_skaters == 0:
+            # Away goalie pulled (0 skaters) - this shouldn't happen, but handle it
+            away_strength = "PK"
+        elif home_skaters == 0:
+            # Home goalie pulled (0 skaters) - Away has advantage
+            away_strength = "PP"
+        elif away_skaters < 5:
+            away_strength = "PK"  # Away is shorthanded
+        # Note: The else clause was removed as it's unreachable
+        # If empty_net is True and all elifs fail, it means none are 6 or 0, which is impossible
+    elif away_skaters == 5 and home_skaters == 5:
+        away_strength = "EV"
+    elif away_skaters > home_skaters:
+        away_strength = "PP"  # Away has more skaters (power play)
+    elif away_skaters < home_skaters:
+        away_strength = "PK"  # Away has fewer skaters (penalty kill)
+    else:
+        away_strength = "EV"
+    
+    return (home_strength, away_strength)
 
 async def fetch_team_standings(redis: Redis = None) -> dict:
     """Fetch team standings/records from NHL API and cache in Redis.
@@ -552,6 +694,8 @@ async def root():
     return {"message": "NHL Game Predictor API", "docs": "/docs"}
 
 class WinProb(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    
     game_id: str
     p_home_win: float
     model_id: str
@@ -590,6 +734,7 @@ async def run_ingestion(game_id: str, redis: Redis):
         # Clear game state and predictions to prevent accumulation
         await redis.delete(f"state:{game_id}")
         await redis.delete(f"pred:{game_id}")
+        await redis.delete(f"last_published_score:{game_id}")
         # Set a flag to signal feature_state to reset this game's state
         await redis.setex(f"reset_game:{game_id}", 60, "1")  # Expires in 60 seconds
         
@@ -654,67 +799,16 @@ async def run_ingestion(game_id: str, redis: Redis):
             home_skaters = int(situation[3]) if len(situation) >= 4 else 5
             
             # Detect empty net situations (6 skaters or 0 skaters = goalie pulled)
-            empty_net = False
-            if away_skaters == 6 or home_skaters == 6 or away_skaters == 0 or home_skaters == 0:
-                empty_net = True
+            empty_net = (away_skaters == 6 or home_skaters == 6 or away_skaters == 0 or home_skaters == 0)
+            
+            # Calculate strength for both teams
+            home_strength, away_strength = calculate_strength(home_skaters, away_skaters)
             
             # Determine strength from the event-owning team's perspective
             if team == "HOME":
-                if empty_net:
-                    if home_skaters == 6:
-                        if away_skaters < 5:
-                            strength = "ENPP"  # Empty net + power play (opponent has < 5 skaters)
-                        else:
-                            strength = "EN"  # Empty net even strength (6v5)
-                    elif away_skaters == 6:
-                        # Away has empty net (6 skaters) - HOME is defending against empty net
-                        if home_skaters < 5:
-                            strength = "PK"  # HOME is shorthanded (penalty kill situation)
-                        else:
-                            strength = "PK"  # HOME defending against empty net (disadvantage)
-                    elif home_skaters == 0:
-                        strength = "PK"  # Home is shorthanded
-                    elif away_skaters == 0:
-                        strength = "PP"  # Home is on power play
-                elif home_skaters == 5 and away_skaters == 5:
-                    strength = "EV"
-                elif home_skaters > away_skaters:
-                    strength = "PP"
-                elif home_skaters < away_skaters:
-                    if home_skaters < 5:
-                        strength = "SH"  # Shorthanded
-                    else:
-                        strength = "PK"
-                else:
-                    strength = "EV"
+                strength = home_strength
             else:  # team == "AWAY"
-                if empty_net:
-                    if away_skaters == 6:
-                        if home_skaters < 5:
-                            strength = "ENPP"  # Empty net + power play (opponent has < 5 skaters)
-                        else:
-                            strength = "EN"  # Empty net even strength (6v5)
-                    elif home_skaters == 6:
-                        # Home has empty net (6 skaters) - AWAY is defending against empty net
-                        if away_skaters < 5:
-                            strength = "PK"  # AWAY is shorthanded (penalty kill situation)
-                        else:
-                            strength = "PK"  # AWAY defending against empty net (disadvantage)
-                    elif away_skaters == 0:
-                        strength = "PK"  # Away is shorthanded
-                    elif home_skaters == 0:
-                        strength = "PP"  # Away is on power play
-                elif away_skaters == 5 and home_skaters == 5:
-                    strength = "EV"
-                elif away_skaters > home_skaters:
-                    strength = "PP"
-                elif away_skaters < home_skaters:
-                    if away_skaters < 5:
-                        strength = "SH"  # Shorthanded
-                    else:
-                        strength = "PK"
-                else:
-                    strength = "EV"
+                strength = away_strength
             
             # Get timestamp
             time_in_period = play.get("timeInPeriod", "00:00")
@@ -771,18 +865,189 @@ async def run_ingestion(game_id: str, redis: Redis):
         # Mark as complete
         await redis.hset(f"ingestion_status:{game_id}", "status", "completed")
         
+        # For live games, start continuous polling for new events
+        game_state = game_data.get("gameState", "")
+        if game_state in ["LIVE", "CRIT"]:
+            print(f"[gateway] Game {game_id} is live, starting continuous polling for new events")
+            asyncio.create_task(poll_live_game_events(game_id, redis, game_start_ts))
+        
     except Exception as e:
         await redis.hset(f"ingestion_status:{game_id}", "status", "failed")
         await redis.hset(f"ingestion_status:{game_id}", "error", str(e))
         print(f"Error in background ingestion: {e}")
 
-@app.on_event("startup")
-async def startup():
-    app.state.redis = Redis.from_url(REDIS_URL, decode_responses=True)
+async def poll_live_game_events(game_id: str, redis: Redis, game_start_ts: float = None):
+    """Continuously poll for new events in live games and publish them to the events stream"""
+    try:
+        # Track processed event IDs to only ingest new events
+        processed_event_ids = set()
+        game_ended = False  # Track if game has ended but we still need to process final events
+        
+        # Poll every 5 seconds for live games
+        while True:
+            try:
+                # Check if game is still live
+                game_data = await fetch_nhl_play_by_play(game_id)
+                if not game_data:
+                    print(f"[gateway] Could not fetch game data for {game_id}, stopping polling")
+                    break
+                
+                game_state = game_data.get("gameState", "")
+                
+                # If game has ended, process final events one more time before stopping
+                if game_state not in ["LIVE", "CRIT"]:
+                    if not game_ended:
+                        # Game just ended - process final events this iteration
+                        game_ended = True
+                        logger.info(f"[gateway] Game {game_id} has ended ({game_state}), processing final events before stopping")
+                    else:
+                        # Already processed final events, now stop
+                        logger.info(f"[gateway] Game {game_id} is no longer live ({game_state}), stopping polling after processing final events")
+                        break
+                
+                # Get current plays
+                plays = game_data.get("plays", [])
+                if not plays:
+                    # If game has ended and no plays, we're done
+                    if game_ended:
+                        logger.info(f"[gateway] Game {game_id} has ended, no more events to process")
+                        break
+                    await asyncio.sleep(5)
+                    continue
+                
+                # Get team IDs
+                home_team_id = game_data.get("homeTeam", {}).get("id")
+                away_team_id = game_data.get("awayTeam", {}).get("id")
+                
+                # Process only new events (events we haven't seen before)
+                new_events_count = 0
+                for play in plays:
+                    # Skip non-relevant events
+                    type_code = str(play.get("typeCode", ""))
+                    if type_code in ["520", "516", "517", "524"]:  # period-start, stoppage, period-end, game-end
+                        continue
+                    
+                    # Use eventId to track processed events
+                    event_id = play.get("eventId")
+                    if not event_id or event_id in processed_event_ids:
+                        continue
+                    
+                    processed_event_ids.add(event_id)
+                    
+                    # Map event types (same as run_ingestion)
+                    type_mapping = {
+                        "502": "FACEOFF", "503": "HIT", "504": "HIT",
+                        "505": "GOAL", "506": "SHOT", "507": "SHOT",
+                        "508": "BLOCK", "509": "PENALTY",
+                    }
+                    mapped_type = type_mapping.get(type_code, "SHOT")
+                    
+                    # Get team
+                    details = play.get("details", {})
+                    event_owner_id = details.get("eventOwnerTeamId")
+                    if event_owner_id == home_team_id:
+                        team = "HOME"
+                    elif event_owner_id == away_team_id:
+                        team = "AWAY"
+                    else:
+                        team = "HOME" if play.get("homeTeamDefendingSide") == "right" else "AWAY"
+                    
+                    # Get strength (same logic as run_ingestion)
+                    situation = play.get("situationCode", "1551")
+                    away_skaters = int(situation[1]) if len(situation) >= 2 else 5
+                    home_skaters = int(situation[3]) if len(situation) >= 4 else 5
+                    
+                    empty_net = (away_skaters == 6 or home_skaters == 6 or away_skaters == 0 or home_skaters == 0)
+                    
+                    # Calculate strength for both teams
+                    home_strength, away_strength = calculate_strength(home_skaters, away_skaters)
+                    
+                    # Determine strength from the event-owning team's perspective
+                    if team == "HOME":
+                        strength = home_strength
+                    else:  # team == "AWAY"
+                        strength = away_strength
+                    
+                    # Get timestamp
+                    time_in_period = play.get("timeInPeriod", "00:00")
+                    period = play.get("periodDescriptor", {}).get("number", 1)
+                    
+                    if game_start_ts:
+                        try:
+                            minutes, seconds = map(int, time_in_period.split(":"))
+                            elapsed_seconds = minutes * 60 + seconds
+                            period_offset = (period - 1) * 1200
+                            timestamp = game_start_ts + period_offset + elapsed_seconds
+                        except (ValueError, TypeError):
+                            import time
+                            timestamp = time.time()
+                    else:
+                        import time
+                        timestamp = time.time()
+                    
+                    # Get coordinates
+                    import random
+                    x = details.get("xCoord", random.uniform(-100, 100))
+                    y = details.get("yCoord", random.uniform(-42.5, 42.5))
+                    
+                    # Extract player ID
+                    player_id = None
+                    if mapped_type == "FACEOFF":
+                        player_id = details.get("winningPlayerId")
+                    elif mapped_type == "GOAL":
+                        player_id = details.get("scoringPlayerId")
+                    elif mapped_type in ["SHOT", "BLOCK"]:
+                        player_id = details.get("shootingPlayerId")
+                    elif mapped_type == "HIT":
+                        player_id = details.get("hittingPlayerId")
+                    elif mapped_type == "PENALTY":
+                        player_id = details.get("playerId")
+                    
+                    # Create event
+                    event = {
+                        "game_id": game_id,
+                        "ts": timestamp,
+                        "team": team,
+                        "event_type": mapped_type,
+                        "strength": strength,
+                        "empty_net": empty_net,
+                        "player_id": player_id,
+                        "x": x,
+                        "y": y,
+                        "shot_quality": random.random(),
+                    }
+                    
+                    # Publish to Redis events stream
+                    await redis.xadd("events", {"json": json.dumps(event)})
+                    new_events_count += 1
+                    logger.debug(f"[gateway] Game {game_id} - published new event: {mapped_type} ({team})")
+                
+                if new_events_count > 0:
+                    logger.info(f"[gateway] Game {game_id} - published {new_events_count} new events")
+                    if game_ended:
+                        logger.info(f"[gateway] Game {game_id} - processed final events, stopping polling")
+                        break
+                
+                # If game has ended and no new events, we're done
+                if game_ended:
+                    logger.info(f"[gateway] Game {game_id} has ended, no new events found, stopping polling")
+                    break
+                
+                # Wait 5 seconds before next poll (only for live games)
+                await asyncio.sleep(5)
+                
+            except Exception as e:
+                logger.error(f"[gateway] Error polling game {game_id}: {e}", exc_info=True)
+                # If game has ended, don't retry - just stop
+                if game_ended:
+                    logger.info(f"[gateway] Game {game_id} has ended, stopping polling after error")
+                    break
+                await asyncio.sleep(5)  # Wait before retrying
+                
+    except Exception as e:
+        logger.error(f"[gateway] Fatal error in game polling for {game_id}: {e}", exc_info=True)
 
-@app.on_event("shutdown")
-async def shutdown():
-    await app.state.redis.aclose()
+# Startup and shutdown are now handled by the lifespan event handler above
 
 async def check_overtime_type(game_id: str) -> str:
     """Check if a game went to overtime or shootout. Returns None, 'OT', or 'SO'"""
@@ -869,59 +1134,62 @@ async def list_games(date: str = None):
                 # For live games, get period and time remaining
                 period = None
                 time_in_period = None
+                is_time_remaining = None
                 if game_state in ["LIVE", "CRIT"]:
+                    print(f"[gateway] Processing live game {game_id}, state: {game_state}")
+                    # Get period from periodDescriptor (it only has period number, not time)
                     period_descriptor = game.get("periodDescriptor", {})
                     period = period_descriptor.get("number", None)
+                    print(f"[gateway] Live game {game_id} - period from periodDescriptor: {period}")
                     
-                    # Try to get time from periodDescriptor first (most current for live games)
-                    # Check various possible fields for current clock time
+                    # For live games, periodDescriptor doesn't have time fields
+                    # We need to fetch from boxscore to get current time
+                    # Boxscore has the most accurate time data for live games
                     is_time_remaining = False  # Track if time is already remaining or elapsed
-                    if period_descriptor:
-                        # timeRemaining is already time remaining, use directly
-                        if period_descriptor.get("timeRemaining"):
-                            time_in_period = period_descriptor.get("timeRemaining")
-                            is_time_remaining = True
-                        # timeInPeriod from periodDescriptor might be remaining or elapsed - check context
-                        elif period_descriptor.get("timeInPeriod"):
-                            time_in_period = period_descriptor.get("timeInPeriod")
-                            # If from periodDescriptor, it's likely time remaining
-                            is_time_remaining = True
-                        elif period_descriptor.get("clock"):
-                            time_in_period = period_descriptor.get("clock")
-                            is_time_remaining = True
-                        elif period_descriptor.get("time"):
-                            time_in_period = period_descriptor.get("time")
-                            is_time_remaining = True
-                    
-                    # If not found in periodDescriptor, try to get from boxscore for more current time
-                    if not time_in_period:
-                        try:
-                            boxscore_data = await fetch_nhl_boxscore(game_id)
-                            if boxscore_data:
-                                boxscore_period = boxscore_data.get("periodDescriptor", {})
-                                if boxscore_period:
-                                    # Always update period from boxscore if available (most current)
-                                    boxscore_period_num = boxscore_period.get("number", None)
-                                    if boxscore_period_num:
-                                        period = boxscore_period_num
-                                    
-                                    if boxscore_period.get("timeRemaining"):
-                                        time_in_period = boxscore_period.get("timeRemaining")
-                                        is_time_remaining = True
-                                    elif boxscore_period.get("timeInPeriod"):
-                                        time_in_period = boxscore_period.get("timeInPeriod")
-                                        is_time_remaining = True
-                                    elif boxscore_period.get("clock"):
-                                        time_in_period = boxscore_period.get("clock")
-                                        is_time_remaining = True
-                                    elif boxscore_period.get("time"):
-                                        time_in_period = boxscore_period.get("time")
-                                        is_time_remaining = True
-                        except Exception:
-                            pass  # Fall back to plays if boxscore fails
+                    try:
+                        print(f"[gateway] Fetching boxscore for live game {game_id}...")
+                        boxscore_data = await fetch_nhl_boxscore(game_id)
+                        if boxscore_data:
+                            print(f"[gateway] Boxscore fetched for {game_id}, checking clock...")
+                            boxscore_period = boxscore_data.get("periodDescriptor", {})
+                            if boxscore_period:
+                                # Always update period from boxscore if available (most current)
+                                boxscore_period_num = boxscore_period.get("number", None)
+                                if boxscore_period_num:
+                                    period = boxscore_period_num
+                                print(f"[gateway] Updated period from boxscore: {period}")
+                            
+                            # Time is in the top-level 'clock' object, not in periodDescriptor
+                            clock = boxscore_data.get("clock", {})
+                            if clock:
+                                print(f"[gateway] Clock object found for {game_id}, keys: {list(clock.keys())}")
+                                if clock.get("timeRemaining"):
+                                    time_in_period = clock.get("timeRemaining")
+                                    is_time_remaining = True
+                                    print(f"[gateway] ✅ Live game {game_id} - got time from boxscore clock.timeRemaining: {time_in_period}")
+                                elif clock.get("timeInPeriod"):
+                                    time_in_period = clock.get("timeInPeriod")
+                                    is_time_remaining = True
+                                    print(f"[gateway] Live game {game_id} - got time from clock.timeInPeriod: {time_in_period}")
+                                elif clock.get("clock"):
+                                    time_in_period = clock.get("clock")
+                                    is_time_remaining = True
+                                elif clock.get("time"):
+                                    time_in_period = clock.get("time")
+                                    is_time_remaining = True
+                            else:
+                                print(f"[gateway] ❌ Live game {game_id} - boxscore has no clock object. Keys: {list(boxscore_data.keys())[:10]}")
+                        else:
+                            print(f"[gateway] ❌ Live game {game_id} - boxscore fetch returned None")
+                    except Exception as e:
+                        print(f"[gateway] ❌ Error fetching boxscore for {game_id}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        pass  # Fall back to plays if boxscore fails
                     
                     # If still not found, get from most recent play
-                    # This might be stale but it's better than nothing
+                    # Note: timeInPeriod from plays is ELAPSED time, not remaining
+                    # We need to convert it to remaining time
                     if not time_in_period:
                         plays = game.get("plays", [])
                         if plays:
@@ -930,12 +1198,46 @@ async def list_games(date: str = None):
                             for play in reversed(plays):
                                 play_time = play.get("timeInPeriod", None)
                                 if play_time:
-                                    time_in_period = play_time
+                                    # timeInPeriod from plays is elapsed time (MM:SS)
+                                    # Convert to remaining time
+                                    try:
+                                        # Parse elapsed time (MM:SS)
+                                        elapsed_parts = play_time.split(":")
+                                        if len(elapsed_parts) == 2:
+                                            elapsed_minutes = int(elapsed_parts[0])
+                                            elapsed_seconds = int(elapsed_parts[1])
+                                            elapsed_total_seconds = elapsed_minutes * 60 + elapsed_seconds
+                                            
+                                            # Get period to determine period length
+                                            play_period = play.get("periodDescriptor", {}).get("number", period or 1)
+                                            if play_period:
+                                                period = play_period
+                                            
+                                            # Determine period length: 20 minutes (1200 seconds) for regulation, 5 minutes (300 seconds) for OT
+                                            period_length_seconds = 1200 if (play_period or period) <= 3 else 300
+                                            
+                                            # Calculate remaining time
+                                            remaining_total_seconds = max(0, period_length_seconds - elapsed_total_seconds)
+                                            remaining_minutes = remaining_total_seconds // 60
+                                            remaining_seconds = remaining_total_seconds % 60
+                                            
+                                            # Format as MM:SS
+                                            time_in_period = f"{remaining_minutes:02d}:{remaining_seconds:02d}"
+                                            is_time_remaining = True
+                                    except (ValueError, IndexError):
+                                        # If conversion fails, use elapsed time as-is but mark as elapsed
+                                        time_in_period = play_time
+                                        is_time_remaining = False
+                                    
                                     # Always get period from the play to ensure accuracy
                                     play_period = play.get("periodDescriptor", {}).get("number", None)
                                     if play_period:
                                         period = play_period
                                     break
+                    
+                    # Debug logging for live games
+                    if not time_in_period:
+                        print(f"[gateway] Live game {game_id} - period: {period}, time_in_period: None. periodDescriptor keys: {list(period_descriptor.keys()) if period_descriptor else 'None'}")
                 
                 # Track completed games to check OT/SO status
                 if game_state in ["OFF", "FINAL"]:
@@ -978,6 +1280,18 @@ async def list_games(date: str = None):
         # Sort games by start time
         games.sort(key=lambda x: x.get("start_time_utc", ""))
         
+        # Automatically start ingestion for live games that aren't already being ingested
+        live_game_ids = [g["game_id"] for g in games if g.get("game_state") in ["LIVE", "CRIT"]]
+        for live_game_id in live_game_ids:
+            try:
+                ingestion_status = await r.hget(f"ingestion_status:{live_game_id}", "status")
+                if not ingestion_status or ingestion_status not in ["in_progress", "completed"]:
+                    # Start ingestion for this live game
+                    print(f"[gateway] Auto-starting ingestion for live game {live_game_id}")
+                    asyncio.create_task(run_ingestion(live_game_id, r))
+            except Exception as e:
+                print(f"[gateway] Error auto-starting ingestion for live game {live_game_id}: {e}")
+        
         return {
             "date": schedule.get("date", "") if isinstance(schedule, dict) else "",
             "games": games,
@@ -1001,6 +1315,7 @@ async def start_game_ingestion(game_id: str):
         
         home_team = game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home")
         away_team = game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away")
+        game_state = game_data.get("gameState", "")
         
         # Trigger ingestion by calling ingestor service
         # We'll use a background task to run the ingestion
@@ -1013,7 +1328,8 @@ async def start_game_ingestion(game_id: str):
                 "message": f"Ingestion already in progress for {away_team} @ {home_team}",
                 "game_id": game_id,
                 "matchup": f"{away_team} @ {home_team}",
-                "status": "in_progress"
+                "status": "in_progress",
+                "is_live": game_state in ["LIVE", "CRIT"]
             }
         
         # Mark as in progress
@@ -1030,7 +1346,9 @@ async def start_game_ingestion(game_id: str):
             "message": f"Started ingestion for {away_team} @ {home_team}",
             "game_id": game_id,
             "matchup": f"{away_team} @ {home_team}",
-            "status": "started"
+            "status": "started",
+            "is_live": game_state in ["LIVE", "CRIT"],
+            "note": "Live games will automatically poll for new events every 5 seconds"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
@@ -1107,8 +1425,30 @@ async def get_winprob(game_id: str):
 async def get_winprob_history(game_id: str):
     """Get historical win probability data for graphing"""
     try:
+        # Calculate current game time first (for live games)
+        current_game_time = None
+        try:
+            game_data = await fetch_nhl_play_by_play(game_id)
+            if game_data:
+                game_state = game_data.get("gameState", "")
+                if game_state in ["LIVE", "CRIT"]:
+                    period_descriptor = game_data.get("periodDescriptor", {})
+                    period = period_descriptor.get("number", 1)
+                    time_remaining = game_data.get("clock", {}).get("timeRemaining", "20:00")
+                    try:
+                        minutes, seconds = map(int, time_remaining.split(":"))
+                        time_remaining_seconds = minutes * 60 + seconds
+                        period_elapsed = 1200 - time_remaining_seconds
+                        period_offset = (period - 1) * 1200
+                        current_game_time = period_offset + period_elapsed
+                    except (ValueError, TypeError):
+                        current_game_time = (period - 1) * 1200
+        except Exception:
+            pass  # Ignore errors fetching game data
+        
         if not DATABASE_URL:
-            return {"game_id": game_id, "data": []}
+            from fastapi.responses import JSONResponse
+            return JSONResponse(content={"game_id": game_id, "data": [], "current_game_time": current_game_time})
         
         # Get game start time from NHL API to calculate relative time
         game_data = await fetch_nhl_play_by_play(game_id)
@@ -1139,29 +1479,74 @@ async def get_winprob_history(game_id: str):
                 # Calculate relative time (seconds elapsed from game start)
                 data = []
                 for ts, p_home_win in rows:
+                    # ts is a datetime object from PostgreSQL
+                    ts_timestamp = ts.timestamp() if hasattr(ts, 'timestamp') else float(ts)
+                    
                     # If we have game start time, calculate relative time
                     if game_start_ts:
-                        relative_time = float(ts.timestamp()) - game_start_ts
+                        relative_time = float(ts_timestamp) - game_start_ts
                         # Only include positive relative times (after game start)
-                        if relative_time >= 0:
+                        # Also filter out unreasonable times (e.g., negative or way too large)
+                        if relative_time >= 0 and relative_time < 14400:  # Max 4 hours (240 minutes)
                             data.append({"ts": relative_time, "p_home_win": float(p_home_win)})
                     else:
                         # Fallback: assume ts is already relative time (for backwards compatibility)
                         # If ts is a timestamp that looks like it's from 1970, it's probably relative time
-                        ts_float = float(ts.timestamp())
-                        if ts_float < 1000000:  # Less than ~11 days after epoch, probably relative time
-                            data.append({"ts": ts_float, "p_home_win": float(p_home_win)})
+                        if ts_timestamp < 1000000:  # Less than ~11 days after epoch, probably relative time
+                            if ts_timestamp >= 0 and ts_timestamp < 14400:  # Max 4 hours
+                                data.append({"ts": ts_timestamp, "p_home_win": float(p_home_win)})
                         else:
-                            # It's an absolute timestamp but we don't have game start - skip or use as-is
-                            # For now, we'll use it but the graph won't be accurate
-                            data.append({"ts": ts_float, "p_home_win": float(p_home_win)})
+                            # It's an absolute timestamp but we don't have game start
+                            # Try to calculate relative time using current time as approximation
+                            import time
+                            current_ts = time.time()
+                            # If prediction is recent (within last 4 hours), estimate relative time
+                            if ts_timestamp > current_ts - 14400:
+                                # Estimate relative time (this is approximate)
+                                estimated_relative = ts_timestamp - (current_ts - 3600)  # Assume game started 1 hour ago
+                                if estimated_relative >= 0 and estimated_relative < 14400:
+                                    data.append({"ts": estimated_relative, "p_home_win": float(p_home_win)})
                 
-                return {"game_id": game_id, "data": data}
+                # Sort by time to ensure correct order
+                data.sort(key=lambda x: x["ts"])
+                
+                # current_game_time was already calculated above, use it
+                import sys
+                print(f"[gateway] get_winprob_history: current_game_time = {current_game_time}, data length = {len(data)}", file=sys.stderr, flush=True)
+                from fastapi.responses import JSONResponse
+                response_content = {
+                    "game_id": game_id,
+                    "data": data,
+                    "current_game_time": current_game_time if current_game_time is not None else 0  # Elapsed seconds from game start (for live games), 0 if not live
+                }
+                print(f"[gateway] get_winprob_history: Returning response with keys: {list(response_content.keys())}", file=sys.stderr, flush=True)
+                return JSONResponse(content=response_content)
     except Exception as e:
         print(f"[gateway] Error fetching win probability history: {e}")
         import traceback
         traceback.print_exc()
-        return {"game_id": game_id, "data": []}
+        # Return empty data but still try to get current_game_time
+        current_game_time = None
+        try:
+            game_data = await fetch_nhl_play_by_play(game_id)
+            if game_data:
+                game_state = game_data.get("gameState", "")
+                if game_state in ["LIVE", "CRIT"]:
+                    period_descriptor = game_data.get("periodDescriptor", {})
+                    period = period_descriptor.get("number", 1)
+                    time_remaining = game_data.get("clock", {}).get("timeRemaining", "20:00")
+                    try:
+                        minutes, seconds = map(int, time_remaining.split(":"))
+                        time_remaining_seconds = minutes * 60 + seconds
+                        period_elapsed = 1200 - time_remaining_seconds
+                        period_offset = (period - 1) * 1200
+                        current_game_time = period_offset + period_elapsed
+                    except (ValueError, TypeError):
+                        current_game_time = (period - 1) * 1200
+        except:
+            pass
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content={"game_id": game_id, "data": [], "current_game_time": current_game_time})
 
 @app.get("/v1/games/{game_id}/rosters")
 async def get_game_rosters(game_id: str):
@@ -1621,11 +2006,13 @@ async def get_game_stats(game_id: str):
             "game_id": game_id,
             "home_team": {
                 "name": home_team_name,
-                "logo": home_team_logo
+                "logo": home_team_logo,
+                "abbrev": home_team.get("abbrev", "") or home_team.get("abbreviation", "")
             },
             "away_team": {
                 "name": away_team_name,
-                "logo": away_team_logo
+                "logo": away_team_logo,
+                "abbrev": away_team.get("abbrev", "") or away_team.get("abbreviation", "")
             },
             "stats": stats
         }
@@ -1950,28 +2337,108 @@ async def get_winprob_friendly(game_id: str):
                 home_score = game_data.get("homeScore", 0) or home_team_data.get("score", 0)
                 away_score = game_data.get("awayScore", 0) or away_team_data.get("score", 0)
                 
-                # Get period and time
+                # Get period and time - use same logic as /v1/games endpoint for consistency
                 period = None
-                time_in_period = ""
-                plays = game_data.get("plays", [])
-                if plays:
-                    for play in reversed(plays):
-                        type_code = play.get("typeCode")
-                        if type_code not in [520, 516, 517, 524]:
-                            time_in_period = play.get("timeInPeriod", "00:00")
-                            period = play.get("periodDescriptor", {}).get("number", 1)
-                            break
+                time_in_period = None
+                is_time_remaining = False
                 
-                # Calculate win probability based on current game state
-                p_home = calculate_win_probability(
-                    home_score=int(home_score) if home_score else 0,
-                    away_score=int(away_score) if away_score else 0,
-                    game_state=game_state,
-                    period=period,
-                    time_in_period=time_in_period,
-                    plays=plays
-                )
-                p_away = 1.0 - p_home
+                # For live games, try to get from periodDescriptor first (most current)
+                if is_live:
+                    period_descriptor = game_data.get("periodDescriptor", {})
+                    if period_descriptor:
+                        period = period_descriptor.get("number", None)
+                        # Try various fields for current clock time
+                        if period_descriptor.get("timeRemaining"):
+                            time_in_period = period_descriptor.get("timeRemaining")
+                            is_time_remaining = True
+                        elif period_descriptor.get("timeInPeriod"):
+                            time_in_period = period_descriptor.get("timeInPeriod")
+                            is_time_remaining = True
+                        elif period_descriptor.get("clock"):
+                            time_in_period = period_descriptor.get("clock")
+                            is_time_remaining = True
+                        elif period_descriptor.get("time"):
+                            time_in_period = period_descriptor.get("time")
+                            is_time_remaining = True
+                    
+                    # If not found in periodDescriptor, try boxscore for more current time
+                    if not time_in_period:
+                        try:
+                            boxscore_data = await fetch_nhl_boxscore(game_id)
+                            if boxscore_data:
+                                boxscore_period = boxscore_data.get("periodDescriptor", {})
+                                if boxscore_period:
+                                    boxscore_period_num = boxscore_period.get("number", None)
+                                    if boxscore_period_num:
+                                        period = boxscore_period_num
+                                    
+                                    if boxscore_period.get("timeRemaining"):
+                                        time_in_period = boxscore_period.get("timeRemaining")
+                                        is_time_remaining = True
+                                    elif boxscore_period.get("timeInPeriod"):
+                                        time_in_period = boxscore_period.get("timeInPeriod")
+                                        is_time_remaining = True
+                                    elif boxscore_period.get("clock"):
+                                        time_in_period = boxscore_period.get("clock")
+                                        is_time_remaining = True
+                                    elif boxscore_period.get("time"):
+                                        time_in_period = boxscore_period.get("time")
+                                        is_time_remaining = True
+                        except Exception:
+                            pass  # Fall back to plays if boxscore fails
+                
+                # If still not found, get from most recent play
+                if not time_in_period:
+                    plays = game_data.get("plays", [])
+                    if plays:
+                        for play in reversed(plays):
+                            type_code = play.get("typeCode")
+                            if type_code not in [520, 516, 517, 524]:
+                                time_in_period = play.get("timeInPeriod", "00:00")
+                                play_period = play.get("periodDescriptor", {}).get("number", None)
+                                if play_period:
+                                    period = play_period
+                                # timeInPeriod from plays is elapsed time, not remaining
+                                is_time_remaining = False
+                                break
+                
+                # Get model prediction from Redis if available, otherwise calculate
+                prediction_key = f"pred:{game_id}"
+                prediction_data = await r.hgetall(prediction_key)
+                
+                # Also get latest prediction from Redis stream to ensure we have the most recent
+                if not prediction_data or "p_home_win" not in prediction_data:
+                    # Try to get latest prediction from stream
+                    try:
+                        stream_predictions = await r.xrevrange("predictions", count=100)
+                        for msg_id, fields in stream_predictions:
+                            if fields.get("json"):
+                                import json
+                                pred_data = json.loads(fields["json"])
+                                if pred_data.get("game_id") == game_id:
+                                    prediction_data = pred_data
+                                    # Update Redis hash with latest prediction
+                                    await r.hset(prediction_key, mapping={k: str(v) for k, v in pred_data.items()})
+                                    break
+                    except Exception as e:
+                        print(f"[gateway] Error getting prediction from stream: {e}")
+                
+                if prediction_data and "p_home_win" in prediction_data:
+                    # Use actual model prediction (from ML model)
+                    p_home = float(prediction_data["p_home_win"])
+                    p_away = 1.0 - p_home
+                else:
+                    # Fall back to calculated probability if no model prediction available
+                    logger.warning(f"[gateway] No model prediction available for game {game_id}, falling back to calculated probability")
+                    p_home = calculate_win_probability(
+                        home_score=int(home_score) if home_score else 0,
+                        away_score=int(away_score) if away_score else 0,
+                        game_state=game_state,
+                        period=period,
+                        time_in_period=time_in_period,
+                        plays=plays
+                    )
+                    p_away = 1.0 - p_home
                 
                 # Get current situation from Redis state if available
                 state_key = f"state:{game_id}"
@@ -2020,6 +2487,7 @@ async def get_winprob_friendly(game_id: str):
                         "game_state": game_state,
                         "period": period,
                         "time_in_period": time_in_period,
+                        "is_time_remaining": is_time_remaining if time_in_period else None,
                         "favorite": favorite
                     },
                     "score": {
@@ -2037,9 +2505,9 @@ async def get_winprob_friendly(game_id: str):
                         }
                     },
                     "win_probability": {
-                        home_team: round(p_home * 100, 1),
-                        away_team: round(p_away * 100, 1),
-                        "summary": f"{home_team}: {round(p_home * 100, 1)}% | {away_team}: {round(p_away * 100, 1)}%"
+                        home_team: round(p_home * 100, 2),  # Use 2 decimals for more precision
+                        away_team: round(p_away * 100, 2),  # Use 2 decimals for more precision
+                        "summary": f"{home_team}: {round(p_home * 100, 2)}% | {away_team}: {round(p_away * 100, 2)}%"
                     },
                     "current_situation": {
                         "strength": situation_description,
@@ -2109,16 +2577,43 @@ async def get_winprob_friendly(game_id: str):
                         period = play.get("periodDescriptor", {}).get("number", period)
                         break
         
-        # Calculate win probability based on current game state
-        p_home = calculate_win_probability(
-            home_score=home_score,
-            away_score=away_score,
-            game_state=game_state,
-            period=period,
-            time_in_period=time_in_period,
-            plays=plays
-        )
-        p_away = 1.0 - p_home
+        # Get model prediction from Redis if available, otherwise calculate
+        prediction_key = f"pred:{game_id}"
+        prediction_data = await r.hgetall(prediction_key)
+        
+        # Also get latest prediction from Redis stream to ensure we have the most recent
+        if not prediction_data or "p_home_win" not in prediction_data:
+            # Try to get latest prediction from stream
+            try:
+                stream_predictions = await r.xrevrange("predictions", count=100)
+                for msg_id, fields in stream_predictions:
+                    if fields.get("json"):
+                        import json
+                        pred_data = json.loads(fields["json"])
+                        if pred_data.get("game_id") == game_id:
+                            prediction_data = pred_data
+                            # Update Redis hash with latest prediction
+                            await r.hset(prediction_key, mapping={k: str(v) for k, v in pred_data.items()})
+                            break
+            except Exception as e:
+                print(f"[gateway] Error getting prediction from stream: {e}")
+        
+        if prediction_data and "p_home_win" in prediction_data:
+            # Use actual model prediction (from ML model)
+            p_home = float(prediction_data["p_home_win"])
+            p_away = 1.0 - p_home
+        else:
+            # Fall back to calculated probability if no model prediction available
+            logger.warning(f"[gateway] No model prediction available for game {game_id}, falling back to calculated probability")
+            p_home = calculate_win_probability(
+                home_score=home_score,
+                away_score=away_score,
+                game_state=game_state,
+                period=period,
+                time_in_period=time_in_period,
+                plays=plays
+            )
+            p_away = 1.0 - p_home
         strength = state.get("strength", "EV")
         empty_net_str = state.get("empty_net", "False")
         empty_net = empty_net_str.lower() == "true" if isinstance(empty_net_str, str) else bool(empty_net_str)
@@ -2265,9 +2760,9 @@ async def get_winprob_friendly(game_id: str):
                 "last_player": last_player_name
             },
             "win_probability": {
-                home_team: round(p_home * 100, 1),
-                away_team: round(p_away * 100, 1),
-                "summary": f"{home_team}: {round(p_home * 100, 1)}% | {away_team}: {round(p_away * 100, 1)}%"
+                home_team: round(p_home * 100, 2),  # Use 2 decimals for more precision
+                away_team: round(p_away * 100, 2),  # Use 2 decimals for more precision
+                "summary": f"{home_team}: {round(p_home * 100, 2)}% | {away_team}: {round(p_away * 100, 2)}%"
             },
             "confidence": "High" if max(p_home, p_away) > 0.7 else "Medium" if max(p_home, p_away) > 0.6 else "Low",
             "updated_at": float(data["ts"])
@@ -2528,6 +3023,10 @@ async def get_playbyplay(game_id: str, limit: int = 30):
         away_score = 0
         events = []
         
+        # Cache period 1 baseline for goal positions (arena-specific)
+        # This determines which side home team starts on in period 1
+        period1_baseline = None  # Will be set to ("right" or "left") when we process first period 1 play
+        
         # Process events in chronological order (they're already sorted by the API)
         for play in processed_plays:
             type_code = play.get("typeCode")
@@ -2687,7 +3186,7 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 # Note: Empty net means a team has 6 skaters (goalie pulled for extra attacker)
                 # or 0 skaters (goalie pulled, but this shouldn't happen for the scoring team)
                 empty_net = (away_skaters == 6 or home_skaters == 6)
-                
+            
                 # Determine strength from the scoring team's perspective
                 # Power play = scoring team has MORE skaters than opponent (advantage)
                 # Shorthanded = scoring team has FEWER skaters than opponent (< 5 skaters)
@@ -2719,10 +3218,10 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                             # Invalid situation (e.g., 5v1, 5v2) - assume even strength
                             strength = "EV"
                     elif home_skaters < away_skaters:
-                        # Home has fewer skaters = shorthanded for home
+                        # Home has fewer skaters = penalty kill for home
                         # Only if home_skaters < 5 (actually shorthanded, not just 5v6 empty net)
-                        if home_skaters < 5 and away_skaters <= 5 and home_skaters >= 3:  # Valid shorthanded range (3v5 to 4v5)
-                            strength = "SH"
+                        if home_skaters < 5 and away_skaters <= 5 and home_skaters >= 3:  # Valid penalty kill range (3v5 to 4v5)
+                            strength = "PK"
                         else:
                             # Invalid situation (e.g., 1v5, 2v5) - assume even strength
                             strength = "EV"
@@ -2754,12 +3253,12 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                             # Invalid situation (e.g., 5v1, 5v2) - assume even strength
                             strength = "EV"
                     elif away_skaters < home_skaters:
-                        # Away has fewer skaters = shorthanded for away
+                        # Away has fewer skaters = penalty kill for away
                         # Only if away_skaters < 5 (actually shorthanded, not just 5v6 empty net)
-                        if away_skaters < 5 and home_skaters <= 5 and away_skaters >= 3:  # Valid shorthanded range (3v5 to 4v5)
-                            strength = "SH"
-                            # Debug: Log shorthanded detection for away team
-                            print(f"[gateway] DEBUG: AWAY shorthanded detected - away_skaters={away_skaters}, home_skaters={home_skaters}, strength={strength}")
+                        if away_skaters < 5 and home_skaters <= 5 and away_skaters >= 3:  # Valid penalty kill range (3v5 to 4v5)
+                            strength = "PK"
+                            # Debug: Log penalty kill detection for away team
+                            print(f"[gateway] DEBUG: AWAY penalty kill detected - away_skaters={away_skaters}, home_skaters={home_skaters}, strength={strength}")
                         else:
                             # Invalid situation (e.g., 1v5, 2v5) - assume even strength
                             strength = "EV"
@@ -2880,68 +3379,72 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 distance = None
                 
                 if x_coord is not None and y_coord is not None:
-                    # Determine which goal based on which team scored and which side they're attacking
-                    # The NHL API coordinate system appears to be relative to the attacking team's perspective
-                    # We need to use homeTeamDefendingSide to determine which goal to measure to
+                    # NHL coordinate system explanation:
+                    # - Goals are positioned at 89 feet and -89 feet
+                    # - Different arenas have home teams starting on different sides
+                    # - We cache the period 1 baseline to determine correct goal positions
+                    # - Teams switch sides between periods (alternate each period)
                     
-                    # Get which side the home team is defending (tells us which end each team attacks)
+                    period = play.get("periodDescriptor", {}).get("number", 1)
                     home_defending_side = play.get("homeTeamDefendingSide", "")
                     
-                    # NHL coordinate system explanation:
-                    # - The coordinate system might be relative to the attacking team's perspective
-                    # - Or it might be fixed with x=0 at one end and x=200 at the other
-                    # - We need to determine which goal the scoring team is attacking
-                    
-                    if x_coord < 0:
-                        # Negative coordinates: -100 to 100 system (alternative coordinate system)
-                        # Determine goal based on which side of center (x=0)
-                        if x_coord < 0:
-                            goal_x = -89  # Goal in negative x direction
-                        else:
-                            goal_x = 89   # Goal in positive x direction
-                    elif x_coord <= 200:
-                        # 0-200 coordinate system (most common)
-                        # Use homeTeamDefendingSide to determine which goal the scoring team attacks
-                        # If home team defends "right", away team attacks "right" (goal at x=200)
-                        # If home team defends "left", home team attacks "left" (goal at x=0)
-                        
+                    # Establish period 1 baseline when processing first period 1 play
+                    if period == 1 and period1_baseline is None:
                         if home_defending_side == "right":
-                            # Home defends right, away attacks right (x > 100 area)
-                            # Home attacks left (x < 100 area)
-                            if team == "HOME":
-                                goal_x = 0  # Home attacks left goal
-                            else:
-                                goal_x = 200  # Away attacks right goal
+                            # Period 1: Home defends right, attacks left → home goal at -89
+                            period1_baseline = {
+                                "home_goal_x": 89,
+                                "away_goal_x": -89
+                            }
                         elif home_defending_side == "left":
-                            # Home defends left, home attacks left (x < 100 area)
-                            # Away attacks right (x > 100 area)
-                            if team == "HOME":
-                                goal_x = 0  # Home attacks left goal
-                            else:
-                                goal_x = 200  # Away attacks right goal
+                            # Period 1: Home defends left, attacks right → home goal at 89
+                            period1_baseline = {
+                                "home_goal_x": -89,
+                                "away_goal_x": 89
+                            }
                         else:
-                            # Fallback: use coordinate position if defending side not available
-                            if x_coord <= 100:
-                                goal_x = 0
-                            else:
-                                goal_x = 200
+                            # Fallback: assume home starts on left (goal at 89)
+                            period1_baseline = {
+                                "home_goal_x": -89,
+                                "away_goal_x": 89
+                            }
+                    
+                    # If we still don't have a baseline (shouldn't happen, but handle it)
+                    if period1_baseline is None:
+                        # Use current period's defending side to infer
+                        if home_defending_side == "right":
+                            period1_baseline = {
+                                "home_goal_x": 89,
+                                "away_goal_x": -89
+                            }
+                        else:
+                            period1_baseline = {
+                                "home_goal_x": -89,
+                                "away_goal_x": 89
+                            }
+                    
+                    # Determine goal positions based on period and period 1 baseline
+                    is_odd_period = (period % 2 == 1)
+                    
+                    if is_odd_period:
+                        # Odd periods (1, 3, 5...): Use period 1 baseline
+                        home_goal_x = period1_baseline["home_goal_x"]
+                        away_goal_x = period1_baseline["away_goal_x"]
                     else:
-                        # Coordinates outside expected range (> 200)
-                        # Fallback logic
-                        if x_coord < 100:
-                            goal_x = 89
-                        else:
-                            goal_x = -89
+                        # Even periods (2, 4, 6...): Opposite of period 1 baseline
+                        home_goal_x = period1_baseline["away_goal_x"]  # Home goal is where away was in period 1
+                        away_goal_x = period1_baseline["home_goal_x"]  # Away goal is where home was in period 1
                     
-                    # Calculate distance using Euclidean distance
-                    distance = math.sqrt((x_coord - goal_x)**2 + y_coord**2)
+                    # Determine which goal the scoring team is attacking
+                    if team == "HOME":
+                        # Home team is attacking the away goal
+                        goal_x = away_goal_x
+                    else:
+                        # Away team is attacking the home goal
+                        goal_x = home_goal_x
                     
-                    # Round to nearest foot
-                    distance = int(round(distance))
-                    
-                    # Clamp distance to reasonable range (0-100 feet)
-                    # Most NHL goals are scored from within 60-70 feet
-                    distance = max(0, min(100, distance))
+                    # Calculate distance using Euclidean distance, round to nearest int
+                    distance = int(round(math.sqrt((x_coord - goal_x)**2 + y_coord**2)))
                 
                 # Determine game situation (game-tying, go-ahead, etc.)
                 # Check what the score will be AFTER this goal
@@ -2963,9 +3466,9 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 # Format shot type
                 shot_type_map = {
                     "snap": "snap shot",
-                    "wrist": "wrist shot",
-                    "slap": "slap shot",
-                    "backhand": "backhand shot",
+                    "wrist": "wrister",
+                    "slap": "slapshot",
+                    "backhand": "backhand",
                     "tip-in": "tip-in",
                     "deflected": "deflected shot",
                     "wrap-around": "wrap-around",
@@ -2976,11 +3479,13 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 # Add strength label (power play or shorthanded) before shot type
                 # Only label as power play if the scoring team is on the power play (PP or ENPP)
                 # PK means penalty kill (defensive situation, not power play goal)
-                # SH means shorthanded (offensive goal while penalty killing)
+                # SH is kept for backward compatibility only (legacy data)
                 strength_label = ""
                 if strength == "PP" or strength == "ENPP":
                     strength_label = "power play "
-                elif strength == "SH":
+                elif strength == "SH" or strength == "PK":
+                    # PK is the standard for penalty kill situations
+                    # SH is kept for backward compatibility with legacy data
                     strength_label = "shorthanded "
                 
                 # Debug: Log all goal strengths to verify they're being set correctly
@@ -3358,6 +3863,9 @@ async def _refresh_playbyplay_cache(game_id: str, r: Redis):
         home_score = 0
         away_score = 0
         
+        # Cache period 1 baseline for goal positions (arena-specific)
+        period1_baseline = None
+        
         for play in processed_plays:
             type_code = play.get("typeCode")
             mapped_type = type_mapping.get(type_code, "SHOT")
@@ -3517,18 +4025,56 @@ async def _refresh_playbyplay_cache(game_id: str, r: Redis):
                 distance = None
                 
                 if x_coord is not None and y_coord is not None:
-                    if x_coord < 0:
-                        goal_x = -89
-                    elif x_coord <= 200:
-                        if x_coord <= 100:
-                            goal_x = 0
+                    # Use same period 1 baseline caching logic as main function
+                    period = play.get("periodDescriptor", {}).get("number", 1)
+                    home_defending_side = play.get("homeTeamDefendingSide", "")
+                    
+                    # Establish period 1 baseline when processing first period 1 play
+                    if period == 1 and period1_baseline is None:
+                        if home_defending_side == "right":
+                            period1_baseline = {
+                                "home_goal_x": -89,
+                                "away_goal_x": 89
+                            }
+                        elif home_defending_side == "left":
+                            period1_baseline = {
+                                "home_goal_x": 89,
+                                "away_goal_x": -89
+                            }
                         else:
-                            goal_x = 200
+                            period1_baseline = {
+                                "home_goal_x": 89,
+                                "away_goal_x": -89
+                            }
+                    
+                    # If we still don't have a baseline (shouldn't happen, but handle it)
+                    if period1_baseline is None:
+                        if home_defending_side == "right":
+                            period1_baseline = {
+                                "home_goal_x": -89,
+                                "away_goal_x": 89
+                            }
+                        else:
+                            period1_baseline = {
+                                "home_goal_x": 89,
+                                "away_goal_x": -89
+                            }
+                    
+                    # Determine goal positions based on period and period 1 baseline
+                    is_odd_period = (period % 2 == 1)
+                    
+                    if is_odd_period:
+                        home_goal_x = period1_baseline["home_goal_x"]
+                        away_goal_x = period1_baseline["away_goal_x"]
                     else:
-                        if x_coord < 100:
-                            goal_x = 89
-                        else:
-                            goal_x = -89
+                        home_goal_x = period1_baseline["away_goal_x"]
+                        away_goal_x = period1_baseline["home_goal_x"]
+                    
+                    # Determine which goal the scoring team is attacking
+                    if team == "HOME":
+                        goal_x = away_goal_x
+                    else:
+                        goal_x = home_goal_x
                     
                     distance = math.sqrt((x_coord - goal_x)**2 + y_coord**2)
                     distance = int(round(distance))
@@ -3563,11 +4109,13 @@ async def _refresh_playbyplay_cache(game_id: str, r: Redis):
                 # Add strength label (power play or shorthanded) before shot type
                 # Only label as power play if the scoring team is on the power play (PP or ENPP)
                 # PK means penalty kill (defensive situation, not power play goal)
-                # SH means shorthanded (offensive goal while penalty killing)
+                # SH is kept for backward compatibility only (legacy data)
                 strength_label = ""
                 if strength == "PP" or strength == "ENPP":
                     strength_label = "power play "
-                elif strength == "SH":
+                elif strength == "SH" or strength == "PK":
+                    # PK is the standard for penalty kill situations
+                    # SH is kept for backward compatibility with legacy data
                     strength_label = "shorthanded "
                 
                 # Build goal description in lowercase format: "15' go-ahead power play snap shot goal"
