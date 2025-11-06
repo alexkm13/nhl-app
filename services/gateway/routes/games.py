@@ -1458,6 +1458,9 @@ async def get_player_stats(game_id: str):
                 "goalies": away_goalies,
             },
         }
+    except HTTPException:
+        # Re-raise HTTPExceptions (like 404) as-is
+        raise
     except Exception as e:
         print(f"[gateway] Error fetching player stats: {e}")
         import traceback
