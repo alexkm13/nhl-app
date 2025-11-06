@@ -104,6 +104,24 @@ class FeatureEngineer:
         df['is_overtime'] = (df['period'] == 4).astype(int)
         df['is_shootout'] = (df['period'] > 4).astype(int)
         
+        # CRITICAL: Score-time interaction features
+        # These help the model understand that score matters more at different times
+        # A 1-goal lead with 10 min left is different than 1-goal lead with 1 min left
+        df['score_diff_time_interaction'] = df['score_diff'] * (df['time_remaining'] / 3600.0)  # Score diff weighted by time remaining
+        # Urgency: score_diff per minute remaining (higher when time is low)
+        # When time is low, urgency is high - score changes matter more
+        df['score_diff_urgency'] = df['score_diff'] / (df['time_remaining'] / 60.0).clip(lower=1.0)  # Score diff per minute remaining
+        # Late game impact: amplifies score_diff when time_normalized is high (late in game)
+        # time_normalized = 0.9 means late in game, so we multiply by time_normalized
+        # This makes score_diff matter MORE as the game progresses
+        df['late_game_score_impact'] = df['score_diff'] * df['time_normalized']  # Amplifies score_diff late in game
+        # Early game dampening: reduces score_diff impact early in game
+        # This prevents 1-goal leads from being over-weighted early
+        # Use negative value to reduce early game impact
+        df['early_game_dampening'] = -df['score_diff'] * (1.0 - df['time_normalized'])  # Negative early (reduces impact), near zero late
+        # Early game penalty: explicitly penalizes early game leads
+        df['early_game_score_penalty'] = -df['score_diff'] * (1.0 - df['time_normalized']) * 0.3  # Reduces early game score impact
+        
         return df
     
     def _add_strength_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -123,6 +141,31 @@ class FeatureEngineer:
         df['away_pp'] = (df['strength'] == 'PK').astype(int)
         df['home_pk'] = (df['strength'] == 'PK').astype(int)
         df['away_pk'] = (df['strength'].isin(['PP', 'ENPP'])).astype(int)
+        
+        # CRITICAL: Power play interaction features (moderate impact)
+        # Power plays are advantages, but not overwhelming
+        # Home team on PP: increases win probability moderately
+        # Away team on PP: decreases win probability moderately
+        df['home_pp_advantage'] = df['home_pp']  # Home has man advantage
+        df['away_pp_advantage'] = df['away_pp']  # Away has man advantage
+        
+        # Power play + score lead = moderate advantage boost
+        df['home_pp_with_lead'] = df['home_pp'] * df['home_leading'] * 0.5  # Home PP + leading (reduced impact)
+        df['away_pp_with_lead'] = df['away_pp'] * df['away_leading'] * 0.5  # Away PP + leading (reduced impact)
+        
+        # Power play + late game = moderate advantage (scaled down)
+        df['home_pp_late_game'] = df['home_pp'] * df['time_normalized'] * 0.5  # Home PP late in game (reduced)
+        df['away_pp_late_game'] = df['away_pp'] * df['time_normalized'] * 0.5  # Away PP late in game (reduced)
+        
+        # Power play + score diff interaction (normalized to prevent excessive impact)
+        # When on PP, score_diff matters slightly more
+        df['home_pp_score_boost'] = df['home_pp'] * df['score_diff'] * 0.3  # Home PP + score diff (reduced)
+        df['away_pp_score_boost'] = df['away_pp'] * df['score_diff'] * 0.3  # Away PP + score diff (reduced)
+        
+        # Power play urgency (normalized to prevent extreme values)
+        # PP late in game matters more, but not excessively
+        df['home_pp_urgency'] = df['home_pp'] * (1.0 / (df['time_remaining'] / 60.0).clip(lower=1.0)) * 0.5  # Home PP urgency (reduced)
+        df['away_pp_urgency'] = df['away_pp'] * (1.0 / (df['time_remaining'] / 60.0).clip(lower=1.0)) * 0.5  # Away PP urgency (reduced)
         
         # Empty net
         if 'empty_net' in df.columns:
@@ -196,6 +239,15 @@ class FeatureEngineer:
         df['recent_goal'] = (df['last_event'] == 'GOAL').astype(int)
         df['recent_penalty'] = (df['last_event'] == 'PENALTY').astype(int)
         df['recent_shot'] = (df['last_event'] == 'SHOT').astype(int)
+        
+        # Goal impact features - amplify score_diff when a goal just happened
+        # This makes the model react more strongly to goals
+        df['goal_just_scored'] = (df['last_event'] == 'GOAL').astype(int)
+        df['score_diff_after_goal'] = df['score_diff'] * df['goal_just_scored']
+        df['goal_impact'] = df['score_diff_abs'] * df['goal_just_scored']
+        
+        # Score momentum - how much the score changed recently
+        df['score_momentum'] = df['score_diff']
         
         return df
     

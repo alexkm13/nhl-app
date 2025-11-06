@@ -1,0 +1,2 @@
+# Goal distance test scripts
+

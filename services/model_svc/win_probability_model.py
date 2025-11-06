@@ -3,7 +3,6 @@ WinProbabilityModel class for production inference.
 This is a simplified version that loads trained models.
 """
 import pickle
-from typing import Optional
 import pandas as pd
 
 # Try to import ML libraries (lazy import to avoid errors if not available)
@@ -23,25 +22,39 @@ class WinProbabilityModel:
         self.feature_columns = None
         self.config = kwargs
     
-    def predict(self, X: pd.DataFrame) -> pd.Series:
-        """Predict win probability."""
+    def predict(self, X: pd.DataFrame, clip_probabilities: bool = True) -> pd.Series:
+        """Predict win probability with optional calibration and clipping."""
         if self.model is None:
             raise ValueError("Model not loaded. Call load() first.")
         
         # Ensure same feature order
         X = X[self.feature_columns]
         
+        # Get raw predictions
         if self.model_type == "xgboost":
-            import xgboost as xgb
-            return pd.Series(self.model.predict_proba(X)[:, 1])
+            raw_probs = self.model.predict_proba(X)[:, 1]
         elif self.model_type == "lightgbm":
-            import lightgbm as lgb
-            return pd.Series(self.model.predict(X))
+            raw_probs = self.model.predict(X)
         elif self.model_type == "catboost":
-            import catboost as cb
-            return pd.Series(self.model.predict_proba(X)[:, 1])
+            raw_probs = self.model.predict_proba(X)[:, 1]
         else:
             raise ValueError(f"Unknown model type: {self.model_type}")
+        
+        # Apply calibration if available
+        if hasattr(self, 'calibrator') and self.calibrator is not None:
+            import numpy as np
+            raw_probs_2d = raw_probs.reshape(-1, 1)
+            calibrated_probs = self.calibrator.predict_proba(raw_probs_2d)[:, 1]
+            probs = calibrated_probs
+        else:
+            probs = raw_probs
+        
+        # Clip probabilities to prevent extreme confidence (0.05 to 0.95)
+        if clip_probabilities:
+            import numpy as np
+            probs = np.clip(probs, 0.05, 0.95)
+        
+        return pd.Series(probs)
     
     @classmethod
     def load(cls, filepath: str) -> 'WinProbabilityModel':
@@ -55,6 +68,7 @@ class WinProbabilityModel:
         )
         instance.model = model_data['model']
         instance.feature_columns = model_data['feature_columns']
+        instance.calibrator = model_data.get('calibrator', None)
         
         return instance
 

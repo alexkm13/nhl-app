@@ -31,7 +31,7 @@ services:
     build: ./services/model_svc
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - MODEL_ID=lightgbm_20251104_121934_d9b5b03f
+      - MODEL_ID=lightgbm_20251104_215914_53104e84
       - DATABASE_URL=postgresql://postgres:postgres@timescaledb:5432/gamecast
       # A/B testing configuration (disabled by default)
       # - AB_TEST_ENABLED=true

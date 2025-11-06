@@ -2,10 +2,8 @@
 HTTP API for managing A/B tests.
 """
 import json
-from typing import Dict, List, Optional
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse, parse_qs
-from ab_test import ABTestManager
+from urllib.parse import urlparse
 from model_router import get_router
 
 
@@ -16,7 +14,6 @@ class ABTestAPIHandler(BaseHTTPRequestHandler):
         """Handle GET requests."""
         parsed = urlparse(self.path)
         path = parsed.path
-        query = parse_qs(parsed.query)
         
         router = get_router()
         manager = router.ab_test_manager

@@ -3,8 +3,6 @@
 import asyncio
 import httpx
 import math
-import json
-from datetime import datetime
 
 
 def calculate_goal_distance(x_coord: float, y_coord: float, goal_x: float) -> int:
@@ -24,41 +22,6 @@ async def fetch_game_data(game_id: str):
         else:
             print(f"Error fetching game {game_id}: {response.status_code}")
             return None
-
-
-def determine_goal_x(x_coord: float, team: str, home_defending_side: str, home_team_id: int, away_team_id: int, event_owner_id: int) -> float:
-    """Determine which goal to measure to based on game state."""
-    if x_coord < 0:
-        # Negative coordinates: -100 to 100 system
-        return -89
-    elif x_coord <= 200:
-        # 0-200 coordinate system (most common)
-        if home_defending_side == "right":
-            # Home defends right, away attacks right (x > 100 area)
-            # Home attacks left (x < 100 area)
-            if team == "HOME":
-                return 0  # Home attacks left goal
-            else:
-                return 200  # Away attacks right goal
-        elif home_defending_side == "left":
-            # Home defends left, home attacks left (x < 100 area)
-            # Away attacks right (x > 100 area)
-            if team == "HOME":
-                return 200  # Home attacks right goal
-            else:
-                return 0  # Away attacks left goal
-        else:
-            # Fallback: use coordinate position
-            if x_coord <= 100:
-                return 0
-            else:
-                return 200
-    else:
-        # Coordinates outside expected range (> 200)
-        if x_coord < 100:
-            return 89
-        else:
-            return -89
 
 
 async def analyze_real_game_goals(game_id: str):
@@ -86,6 +49,10 @@ async def analyze_real_game_goals(game_id: str):
     plays = game_data.get("plays", [])
     goals = []
     
+    # Cache period 1 baseline for goal positions (arena-specific)
+    # This matches the logic in services/gateway/main.py
+    period1_baseline = None
+    
     # Extract all goals
     for play in plays:
         type_code = str(play.get("typeCode", ""))
@@ -111,16 +78,75 @@ async def analyze_real_game_goals(game_id: str):
                 # Get shot type
                 shot_type = details.get("shotType", "")
                 
-                # Determine goal position
+                # Determine goal position using period-based baseline caching
+                # NHL coordinate system: goals are positioned at 89 feet and -89 feet
+                # Different arenas have home teams starting on different sides
+                # We cache the period 1 baseline to determine correct goal positions
+                # Teams switch sides between periods (alternate each period)
+                
+                period = play.get("periodDescriptor", {}).get("number", 1)
                 home_defending_side = play.get("homeTeamDefendingSide", "")
-                goal_x = determine_goal_x(x_coord, team, home_defending_side, home_team_id, away_team_id, event_owner_id)
+                
+                # Establish period 1 baseline when processing first period 1 play
+                if period == 1 and period1_baseline is None:
+                    if home_defending_side == "right":
+                        # Period 1: Home defends right → home goal on RIGHT side (positive x)
+                        period1_baseline = {
+                            "home_goal_x": 89,   # RIGHT side (positive)
+                            "away_goal_x": -89   # LEFT side (negative)
+                        }
+                    elif home_defending_side == "left":
+                        # Period 1: Home defends left → home goal on LEFT side (negative x)
+                        period1_baseline = {
+                            "home_goal_x": -89,  # LEFT side (negative)
+                            "away_goal_x": 89    # RIGHT side (positive)
+                        }
+                    else:
+                        # Fallback: assume home starts on left (goal at -89)
+                        period1_baseline = {
+                            "home_goal_x": -89,
+                            "away_goal_x": 89
+                        }
+                
+                # If we still don't have a baseline (shouldn't happen, but handle it)
+                if period1_baseline is None:
+                    # Use current period's defending side to infer
+                    if home_defending_side == "right":
+                        period1_baseline = {
+                            "home_goal_x": 89,   # RIGHT side (positive)
+                            "away_goal_x": -89  # LEFT side (negative)
+                        }
+                    else:
+                        period1_baseline = {
+                            "home_goal_x": -89, # LEFT side (negative)
+                            "away_goal_x": 89  # RIGHT side (positive)
+                        }
+                
+                # Determine goal positions based on period and period 1 baseline
+                is_odd_period = (period % 2 == 1)
+                
+                if is_odd_period:
+                    # Odd periods (1, 3, 5...): Use period 1 baseline
+                    home_goal_x = period1_baseline["home_goal_x"]
+                    away_goal_x = period1_baseline["away_goal_x"]
+                else:
+                    # Even periods (2, 4, 6...): Opposite of period 1 baseline
+                    home_goal_x = period1_baseline["away_goal_x"]  # Home goal is where away was in period 1
+                    away_goal_x = period1_baseline["home_goal_x"]  # Away goal is where home was in period 1
+                
+                # Determine which goal the scoring team is attacking
+                if team == "HOME":
+                    # Home team is attacking the away goal
+                    goal_x = away_goal_x
+                else:
+                    # Away team is attacking the home goal
+                    goal_x = home_goal_x
                 
                 # Calculate distance
                 distance = calculate_goal_distance(x_coord, y_coord, goal_x)
                 
                 # Get time
                 time_in_period = play.get("timeInPeriod", "00:00")
-                period = play.get("periodDescriptor", {}).get("number", 1)
                 
                 goals.append({
                     "team": team_name,

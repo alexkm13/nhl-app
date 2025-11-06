@@ -4,7 +4,7 @@ A/B testing framework for model comparisons.
 import os
 import random
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 from datetime import datetime
 
