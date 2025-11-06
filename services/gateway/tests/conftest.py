@@ -1,4 +1,5 @@
 """Shared pytest fixtures for testing."""
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -27,7 +28,7 @@ def mock_redis():
 @pytest.fixture
 def mock_httpx_client():
     """Create a mock httpx client."""
-    with patch('httpx.AsyncClient') as mock_client:
+    with patch("httpx.AsyncClient") as mock_client:
         client_instance = AsyncMock()
         mock_client.return_value.__aenter__.return_value = client_instance
         mock_client.return_value.__aexit__.return_value = None
@@ -52,7 +53,7 @@ def sample_game_data():
             "placeName": {"default": "Boston"},
             "abbrev": "BOS",
             "logo": "https://example.com/bruins.png",
-            "score": 2
+            "score": 2,
         },
         "awayTeam": {
             "id": 2,
@@ -60,7 +61,7 @@ def sample_game_data():
             "placeName": {"default": "Toronto"},
             "abbrev": "TOR",
             "logo": "https://example.com/leafs.png",
-            "score": 1
+            "score": 1,
         },
         "plays": [
             {
@@ -74,10 +75,10 @@ def sample_game_data():
                     "scoringPlayerId": 12345,
                     "shotType": "wrist",
                     "xCoord": 50,
-                    "yCoord": 20
-                }
+                    "yCoord": 20,
+                },
             }
-        ]
+        ],
     }
 
 
@@ -99,10 +100,10 @@ def sample_boxscore_data():
                         "firstName": {"default": "Brad"},
                         "lastName": {"default": "Marchand"},
                         "position": "LW",
-                        "sweaterNumber": 63
+                        "sweaterNumber": 63,
                     }
                 ]
-            }
+            },
         },
         "awayTeam": {
             "id": 2,
@@ -118,10 +119,10 @@ def sample_boxscore_data():
                         "firstName": {"default": "Auston"},
                         "lastName": {"default": "Matthews"},
                         "position": "C",
-                        "sweaterNumber": 34
+                        "sweaterNumber": 34,
                     }
                 ]
-            }
+            },
         },
         "playerByGameStats": {
             "homeTeam": {
@@ -137,11 +138,11 @@ def sample_boxscore_data():
                         "pim": 0,
                         "shots": 5,
                         "hits": 3,
-                        "toi": 1200
+                        "toi": 1200,
                     }
                 ],
                 "defense": [],
-                "goalies": []
+                "goalies": [],
             },
             "awayTeam": {
                 "forwards": [
@@ -156,12 +157,11 @@ def sample_boxscore_data():
                         "pim": 0,
                         "shots": 6,
                         "hits": 2,
-                        "toi": 1100
+                        "toi": 1100,
                     }
                 ],
                 "defense": [],
-                "goalies": []
-            }
-        }
+                "goalies": [],
+            },
+        },
     }
-

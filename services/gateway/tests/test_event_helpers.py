@@ -1,4 +1,5 @@
 """Tests for event helper functions."""
+
 from unittest.mock import patch
 
 import pytest
@@ -29,10 +30,12 @@ def test_extract_player_id_from_event_goal():
     details = {
         "scoringPlayerId": 12345,
         "assist1PlayerId": 67890,
-        "assist2PlayerId": 11111
+        "assist2PlayerId": 11111,
     }
-    primary_id, assist1_id, assist2_id, blocking_id, shooting_id = extract_player_id_from_event("GOAL", details)
-    
+    primary_id, assist1_id, assist2_id, blocking_id, shooting_id = (
+        extract_player_id_from_event("GOAL", details)
+    )
+
     assert primary_id == 12345
     assert assist1_id == 67890
     assert assist2_id == 11111
@@ -42,11 +45,11 @@ def test_extract_player_id_from_event_goal():
 
 def test_extract_player_id_from_event_penalty():
     """Test extracting player ID from PENALTY event."""
-    details = {
-        "committedByPlayerId": 12345
-    }
-    primary_id, assist1_id, assist2_id, blocking_id, shooting_id = extract_player_id_from_event("PENALTY", details)
-    
+    details = {"committedByPlayerId": 12345}
+    primary_id, assist1_id, assist2_id, blocking_id, shooting_id = (
+        extract_player_id_from_event("PENALTY", details)
+    )
+
     assert primary_id == 12345
     assert assist1_id is None
 
@@ -55,10 +58,12 @@ def test_extract_player_id_from_event_block():
     """Test extracting player ID from BLOCK event."""
     details = {
         "playerId": 12345,  # Blocking player
-        "shootingPlayerId": 67890
+        "shootingPlayerId": 67890,
     }
-    primary_id, assist1_id, assist2_id, blocking_id, shooting_id = extract_player_id_from_event("BLOCK", details)
-    
+    primary_id, assist1_id, assist2_id, blocking_id, shooting_id = (
+        extract_player_id_from_event("BLOCK", details)
+    )
+
     assert primary_id == 12345
     assert blocking_id == 12345
     assert shooting_id == 67890
@@ -95,7 +100,7 @@ def test_parse_situation_code():
     home_skaters, away_skaters = parse_situation_code("1555")
     assert home_skaters == 5
     assert away_skaters == 5
-    
+
     # "1455" means away=4, home=5 (home has power play)
     home_skaters, away_skaters = parse_situation_code("1455")
     assert home_skaters == 5
@@ -112,7 +117,9 @@ def test_parse_situation_code_invalid():
 def test_calculate_goal_distance():
     """Test calculating goal distance."""
     # Test goal at (89, 0) - should be 0 distance from home goal
-    distance = calculate_goal_distance(89, 0, {"homeTeamDefendingSide": "right"}, "HOME", None)
+    distance = calculate_goal_distance(
+        89, 0, {"homeTeamDefendingSide": "right"}, "HOME", None
+    )
     assert distance is not None
     assert distance >= 0
 
@@ -120,7 +127,9 @@ def test_calculate_goal_distance():
 def test_calculate_goal_distance_away_goal():
     """Test calculating distance to away goal."""
     # Test goal at (-89, 0) - should be 0 distance from away goal
-    distance = calculate_goal_distance(-89, 0, {"homeTeamDefendingSide": "left"}, "AWAY", None)
+    distance = calculate_goal_distance(
+        -89, 0, {"homeTeamDefendingSide": "left"}, "AWAY", None
+    )
     assert distance is not None
     assert distance >= 0
 
@@ -132,9 +141,11 @@ def test_format_goal_description():
     game_situation = "go-ahead "
     strength = "PP"
     assists = ["Player 1", "Player 2"]
-    
-    desc = format_goal_description(shot_type, distance, game_situation, strength, assists)
-    
+
+    desc = format_goal_description(
+        shot_type, distance, game_situation, strength, assists
+    )
+
     assert "go-ahead" in desc.lower()
     assert "power play" in desc.lower() or "pp" in desc.lower()
     assert "wrist" in desc.lower()
@@ -147,11 +158,11 @@ def test_format_shot_description():
     desc = format_shot_description("wrist", was_saved=True, was_blocked=False)
     assert "saved" in desc.lower()
     assert "wrist" in desc.lower()
-    
+
     # Test blocked shot
     desc = format_shot_description("slap", was_saved=False, was_blocked=True)
     assert "blocked" in desc.lower()
-    
+
     # Test missed shot
     desc = format_shot_description("snap", was_saved=False, was_blocked=False)
     assert "missed" in desc.lower()
@@ -162,7 +173,7 @@ def test_format_penalty_description():
     desc = format_penalty_description("tripping", 2)
     assert "tripping" in desc.lower()
     assert "2" in desc or "min" in desc.lower()
-    
+
     desc = format_penalty_description("fighting", 5)
     assert "fighting" in desc.lower()
     assert "5" in desc
@@ -204,13 +215,15 @@ def test_get_game_situation_first_goal():
 async def test_get_player_info_with_cache(mock_redis):
     """Test get_player_info with cached data."""
     from event_helpers import get_player_info
-    
+
     player_id = 12345
     player_names = {player_id: "Brad Marchand"}
     player_headshots = {player_id: "https://example.com/headshot.png"}
-    
-    name, headshot = await get_player_info(player_id, player_names, player_headshots, mock_redis)
-    
+
+    name, headshot = await get_player_info(
+        player_id, player_names, player_headshots, mock_redis
+    )
+
     assert name == "Brad Marchand"
     assert headshot == "https://example.com/headshot.png"
 
@@ -219,18 +232,22 @@ async def test_get_player_info_with_cache(mock_redis):
 async def test_get_player_info_fallback(mock_redis):
     """Test get_player_info with fallback to individual fetch."""
     from event_helpers import get_player_info
-    
+
     player_id = 12345
     player_names = {}
     player_headshots = {}
-    
-    with patch('player_utils.get_player_name') as mock_get_name, \
-         patch('player_utils.get_player_headshot') as mock_get_headshot:
+
+    with (
+        patch("player_utils.get_player_name") as mock_get_name,
+        patch("player_utils.get_player_headshot") as mock_get_headshot,
+    ):
         mock_get_name.return_value = "Brad Marchand"
         mock_get_headshot.return_value = "https://example.com/headshot.png"
-        
-        name, headshot = await get_player_info(player_id, player_names, player_headshots, mock_redis)
-        
+
+        name, headshot = await get_player_info(
+            player_id, player_names, player_headshots, mock_redis
+        )
+
         assert name == "Brad Marchand"
         assert headshot == "https://example.com/headshot.png"
         mock_get_name.assert_called_once()
@@ -241,9 +258,8 @@ async def test_get_player_info_fallback(mock_redis):
 async def test_get_player_info_no_player_id(mock_redis):
     """Test get_player_info with None player_id."""
     from event_helpers import get_player_info
-    
+
     name, headshot = await get_player_info(None, {}, {}, mock_redis)
-    
+
     assert name is None
     assert headshot is None
-

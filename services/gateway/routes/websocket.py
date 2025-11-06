@@ -1,4 +1,5 @@
 """WebSocket API routes."""
+
 import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -6,10 +7,12 @@ from redis.asyncio import Redis
 
 router = APIRouter(prefix="/v1", tags=["websocket"])
 
+
 # Import WS_CONNECTIONS from main
 def get_ws_connections():
     """Get WS_CONNECTIONS gauge from main."""
     from main import WS_CONNECTIONS
+
     return WS_CONNECTIONS
 
 
@@ -17,6 +20,7 @@ def get_ws_connections():
 def get_redis() -> Redis:
     """Get Redis instance from app state."""
     from main import app
+
     return app.state.redis
 
 
@@ -44,4 +48,3 @@ async def stream_game(ws: WebSocket, game_id: str):
         await pubsub.unsubscribe(channel)
         await pubsub.close()
         WS_CONNECTIONS.dec()
-

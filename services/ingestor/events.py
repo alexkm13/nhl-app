@@ -6,6 +6,7 @@ Team = Literal["HOME", "AWAY"]
 Strength = Literal["EV", "PP", "PK", "EN", "ENPP", "ENPK", "SH"]
 EventType = Literal["FACEOFF", "SHOT", "GOAL", "PENALTY", "BLOCK", "HIT"]
 
+
 class GameEvent(BaseModel):
     game_id: str
     ts: float = Field(description="unix timestamp seconds")

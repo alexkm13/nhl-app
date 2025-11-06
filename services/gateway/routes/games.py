@@ -1,4 +1,5 @@
 """Game-related API routes."""
+
 import asyncio
 import os
 import time
@@ -8,7 +9,12 @@ import psycopg
 from fastapi import APIRouter, HTTPException
 from redis.asyncio import Redis
 
-from nhl_api import fetch_nhl_boxscore, fetch_nhl_daily_schedule, fetch_nhl_play_by_play, fetch_team_standings
+from nhl_api import (
+    fetch_nhl_boxscore,
+    fetch_nhl_daily_schedule,
+    fetch_nhl_play_by_play,
+    fetch_team_standings,
+)
 from player_utils import get_player_name, get_player_headshot
 from models import WinProb
 from utils import check_overtime_type, run_ingestion, calculate_win_probability
@@ -22,6 +28,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 def get_redis() -> Redis:
     """Get Redis instance from app state."""
     from main import app
+
     return app.state.redis
 
 
@@ -31,56 +38,56 @@ async def list_games(date: str = None):
     try:
         r = get_redis()
         schedule = await fetch_nhl_daily_schedule(date)
-        
+
         # Fetch team standings for records
         standings = await fetch_team_standings(r)
-        
+
         games = []
         games_list = schedule.get("games", []) if isinstance(schedule, dict) else []
         completed_game_ids = []
-        
+
         for game in games_list:
             if isinstance(game, dict):
                 # Get team names
                 away_team = game.get("awayTeam", {})
                 home_team = game.get("homeTeam", {})
-                
+
                 # Get team abbreviations for matching with standings
                 away_team_abbrev = away_team.get("abbrev", "")
                 home_team_abbrev = home_team.get("abbrev", "")
-                
+
                 # Get team records from standings (standings are keyed by abbreviation)
                 away_record = None
                 home_record = None
                 if standings:
                     away_team_stats = standings.get(away_team_abbrev, {})
                     home_team_stats = standings.get(home_team_abbrev, {})
-                    
+
                     if away_team_stats:
                         away_record = f"{away_team_stats.get('wins', 0)}-{away_team_stats.get('losses', 0)}-{away_team_stats.get('ot_losses', 0)}"
                     if home_team_stats:
                         home_record = f"{home_team_stats.get('wins', 0)}-{home_team_stats.get('losses', 0)}-{home_team_stats.get('ot_losses', 0)}"
-                
+
                 # Get start time in UTC - let client convert to local time
                 start_time = game.get("startTimeUTC", "")
-                
+
                 # Get spread (mock for now - can be replaced with real betting API)
                 spread_value = None
                 spread_favorite = None
                 over_under = None
-                
+
                 # Check if game went to overtime or shootout (for completed games)
                 game_state = game.get("gameState", "")
                 game_id = str(game.get("id", ""))
                 overtime_type = None
-                
+
                 # For live games, get period and time remaining
                 period = None
                 time_in_period = None
                 if game_state in ["LIVE", "CRIT"]:
                     period_descriptor = game.get("periodDescriptor", {})
                     period = period_descriptor.get("number", None)
-                    
+
                     # Try to get time from periodDescriptor first (most current for live games)
                     is_time_remaining = False
                     if period_descriptor:
@@ -96,23 +103,31 @@ async def list_games(date: str = None):
                         elif period_descriptor.get("time"):
                             time_in_period = period_descriptor.get("time")
                             is_time_remaining = True
-                    
+
                     # If not found in periodDescriptor, try to get from boxscore for more current time
                     if not time_in_period:
                         try:
                             boxscore_data = await fetch_nhl_boxscore(game_id)
                             if boxscore_data:
-                                boxscore_period = boxscore_data.get("periodDescriptor", {})
+                                boxscore_period = boxscore_data.get(
+                                    "periodDescriptor", {}
+                                )
                                 if boxscore_period:
-                                    boxscore_period_num = boxscore_period.get("number", None)
+                                    boxscore_period_num = boxscore_period.get(
+                                        "number", None
+                                    )
                                     if boxscore_period_num:
                                         period = boxscore_period_num
-                                    
+
                                     if boxscore_period.get("timeRemaining"):
-                                        time_in_period = boxscore_period.get("timeRemaining")
+                                        time_in_period = boxscore_period.get(
+                                            "timeRemaining"
+                                        )
                                         is_time_remaining = True
                                     elif boxscore_period.get("timeInPeriod"):
-                                        time_in_period = boxscore_period.get("timeInPeriod")
+                                        time_in_period = boxscore_period.get(
+                                            "timeInPeriod"
+                                        )
                                         is_time_remaining = True
                                     elif boxscore_period.get("clock"):
                                         time_in_period = boxscore_period.get("clock")
@@ -122,7 +137,7 @@ async def list_games(date: str = None):
                                         is_time_remaining = True
                         except Exception:
                             pass
-                    
+
                     # If still not found, get from most recent play
                     if not time_in_period:
                         plays = game.get("plays", [])
@@ -131,61 +146,73 @@ async def list_games(date: str = None):
                                 play_time = play.get("timeInPeriod", None)
                                 if play_time:
                                     time_in_period = play_time
-                                    play_period = play.get("periodDescriptor", {}).get("number", None)
+                                    play_period = play.get("periodDescriptor", {}).get(
+                                        "number", None
+                                    )
                                     if play_period:
                                         period = play_period
                                     break
-                
+
                 # Track completed games to check OT/SO status
                 if game_state in ["OFF", "FINAL"]:
                     completed_game_ids.append(game_id)
-                
-                games.append({
-                    "game_id": game_id,
-                    "away_team": away_team.get("abbrev", ""),
-                    "away_team_name": away_team.get("commonName", {}).get("default", ""),
-                    "away_team_logo": away_team.get("logo", ""),
-                    "away_team_record": away_record,
-                    "home_team": home_team.get("abbrev", ""),
-                    "home_team_name": home_team.get("commonName", {}).get("default", ""),
-                    "home_team_logo": home_team.get("logo", ""),
-                    "home_team_record": home_record,
-                    "venue": game.get("venue", {}).get("default", ""),
-                    "start_time_utc": start_time,
-                    "game_state": game_state,
-                    "away_score": game.get("awayScore", 0) if "awayScore" in game else away_team.get("score", 0),
-                    "home_score": game.get("homeScore", 0) if "homeScore" in game else home_team.get("score", 0),
-                    "period": period,
-                    "time_in_period": time_in_period,
-                    "is_time_remaining": is_time_remaining if time_in_period else None,
-                    "spread": spread_value,
-                    "spread_favorite": spread_favorite,
-                    "over_under": over_under,
-                    "overtime_type": overtime_type
-                })
-        
+
+                games.append(
+                    {
+                        "game_id": game_id,
+                        "away_team": away_team.get("abbrev", ""),
+                        "away_team_name": away_team.get("commonName", {}).get(
+                            "default", ""
+                        ),
+                        "away_team_logo": away_team.get("logo", ""),
+                        "away_team_record": away_record,
+                        "home_team": home_team.get("abbrev", ""),
+                        "home_team_name": home_team.get("commonName", {}).get(
+                            "default", ""
+                        ),
+                        "home_team_logo": home_team.get("logo", ""),
+                        "home_team_record": home_record,
+                        "venue": game.get("venue", {}).get("default", ""),
+                        "start_time_utc": start_time,
+                        "game_state": game_state,
+                        "away_score": game.get("awayScore", 0)
+                        if "awayScore" in game
+                        else away_team.get("score", 0),
+                        "home_score": game.get("homeScore", 0)
+                        if "homeScore" in game
+                        else home_team.get("score", 0),
+                        "period": period,
+                        "time_in_period": time_in_period,
+                        "is_time_remaining": is_time_remaining
+                        if time_in_period
+                        else None,
+                        "spread": spread_value,
+                        "spread_favorite": spread_favorite,
+                        "over_under": over_under,
+                        "overtime_type": overtime_type,
+                    }
+                )
+
         # Check OT/SO status for completed games in parallel
         if completed_game_ids:
-            ot_checks = await asyncio.gather(*[check_overtime_type(game_id) for game_id in completed_game_ids])
+            ot_checks = await asyncio.gather(
+                *[check_overtime_type(game_id) for game_id in completed_game_ids]
+            )
             ot_map = dict(zip(completed_game_ids, ot_checks))
             for game in games:
                 if game["game_id"] in ot_map:
                     game["overtime_type"] = ot_map[game["game_id"]]
-        
+
         # Sort games by start time
         games.sort(key=lambda x: x.get("start_time_utc", ""))
-        
+
         return {
             "date": schedule.get("date", "") if isinstance(schedule, dict) else "",
             "games": games,
-            "total_games": len(games)
+            "total_games": len(games),
         }
     except Exception as e:
-        return {
-            "error": str(e),
-            "games": [],
-            "total_games": 0
-        }
+        return {"error": str(e), "games": [], "total_games": 0}
 
 
 @router.post("/{game_id}/start")
@@ -196,12 +223,16 @@ async def start_game_ingestion(game_id: str):
         game_data = await fetch_nhl_play_by_play(game_id)
         if not game_data:
             raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
-        
-        home_team = game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home")
-        away_team = game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away")
-        
+
+        home_team = (
+            game_data.get("homeTeam", {}).get("commonName", {}).get("default", "Home")
+        )
+        away_team = (
+            game_data.get("awayTeam", {}).get("commonName", {}).get("default", "Away")
+        )
+
         r = get_redis()
-        
+
         # Check if ingestion is already in progress
         existing = await r.hget(f"ingestion_status:{game_id}", "status")
         if existing and existing == "in_progress":
@@ -209,24 +240,27 @@ async def start_game_ingestion(game_id: str):
                 "message": f"Ingestion already in progress for {away_team} @ {home_team}",
                 "game_id": game_id,
                 "matchup": f"{away_team} @ {home_team}",
-                "status": "in_progress"
+                "status": "in_progress",
             }
-        
+
         # Mark as in progress
-        await r.hset(f"ingestion_status:{game_id}", mapping={
-            "status": "in_progress",
-            "game_id": game_id,
-            "matchup": f"{away_team} @ {home_team}"
-        })
-        
+        await r.hset(
+            f"ingestion_status:{game_id}",
+            mapping={
+                "status": "in_progress",
+                "game_id": game_id,
+                "matchup": f"{away_team} @ {home_team}",
+            },
+        )
+
         # Run ingestion in background
         asyncio.create_task(run_ingestion(game_id, r))
-        
+
         return {
             "message": f"Started ingestion for {away_team} @ {home_team}",
             "game_id": game_id,
             "matchup": f"{away_team} @ {home_team}",
-            "status": "started"
+            "status": "started",
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
@@ -236,20 +270,20 @@ async def start_game_ingestion(game_id: str):
 async def get_game_status(game_id: str):
     """Check ingestion and prediction status for a game"""
     r = get_redis()
-    
+
     # Check ingestion status
     ingestion_status = await r.hgetall(f"ingestion_status:{game_id}")
-    
+
     # Check if prediction exists
     prediction = await r.hgetall(f"pred:{game_id}")
-    
+
     # Check if state exists
     state = await r.hgetall(f"state:{game_id}")
-    
+
     status = ingestion_status.get("status", "not_started")
     has_prediction = bool(prediction)
     has_state = bool(state)
-    
+
     return {
         "game_id": game_id,
         "matchup": ingestion_status.get("matchup", "Unknown"),
@@ -258,12 +292,16 @@ async def get_game_status(game_id: str):
         "has_state": has_state,
         "error": ingestion_status.get("error"),
         "message": (
-            "Prediction available" if has_prediction
-            else "Ingestion in progress, please wait..." if status == "in_progress"
-            else "Ingestion completed, waiting for prediction..." if status == "completed"
-            else "Ingestion failed" if status == "failed"
+            "Prediction available"
+            if has_prediction
+            else "Ingestion in progress, please wait..."
+            if status == "in_progress"
+            else "Ingestion completed, waiting for prediction..."
+            if status == "completed"
+            else "Ingestion failed"
+            if status == "failed"
             else "No ingestion started yet. Call POST /v1/games/{game_id}/start to begin."
-        )
+        ),
     }
 
 
@@ -278,18 +316,18 @@ async def get_winprob(game_id: str):
         if ingestion_status == "in_progress":
             raise HTTPException(
                 status_code=202,
-                detail="Ingestion in progress. Please wait 60-90 seconds and try again. Check status at GET /v1/games/{game_id}/status"
+                detail="Ingestion in progress. Please wait 60-90 seconds and try again. Check status at GET /v1/games/{game_id}/status",
             )
         elif ingestion_status == "failed":
             error = await r.hget(f"ingestion_status:{game_id}", "error")
             raise HTTPException(
                 status_code=500,
-                detail=f"Ingestion failed: {error}. Check status at GET /v1/games/{game_id}/status"
+                detail=f"Ingestion failed: {error}. Check status at GET /v1/games/{game_id}/status",
             )
         else:
             raise HTTPException(
                 status_code=404,
-                detail=f"No prediction yet for game {game_id}. Start ingestion with POST /v1/games/{game_id}/start"
+                detail=f"No prediction yet for game {game_id}. Start ingestion with POST /v1/games/{game_id}/start",
             )
     try:
         return WinProb(
@@ -308,7 +346,7 @@ async def get_winprob_history(game_id: str):
     try:
         if not DATABASE_URL:
             return {"game_id": game_id, "data": []}
-        
+
         # Get game start time from NHL API to calculate relative time
         game_data = await fetch_nhl_play_by_play(game_id)
         game_start_ts = None
@@ -316,11 +354,13 @@ async def get_winprob_history(game_id: str):
             game_start_str = game_data.get("startTimeUTC", "")
             if game_start_str:
                 try:
-                    game_start = datetime.fromisoformat(game_start_str.replace('Z', '+00:00'))
+                    game_start = datetime.fromisoformat(
+                        game_start_str.replace("Z", "+00:00")
+                    )
                     game_start_ts = game_start.timestamp()
                 except Exception:
                     pass
-        
+
         async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
@@ -330,38 +370,46 @@ async def get_winprob_history(game_id: str):
                     WHERE game_id = %s 
                     ORDER BY ts ASC
                     """,
-                    (game_id,)
+                    (game_id,),
                 )
                 rows = await cur.fetchall()
-                
+
                 # Calculate relative time (seconds elapsed from game start)
                 # Filter out invalid timestamps (e.g., 1970-01-01 from old bug)
                 data = []
                 for ts, p_home_win in rows:
                     ts_timestamp = float(ts.timestamp())
-                    
+
                     # Skip timestamps that are clearly wrong (before 2020 or way in future)
                     # Valid predictions should be recent (after 2020)
                     if ts_timestamp < 1577836800:  # Before 2020-01-01
                         continue
                     if ts_timestamp > time.time() + 86400:  # More than 1 day in future
                         continue
-                    
+
                     if game_start_ts:
                         relative_time = ts_timestamp - game_start_ts
                         # Only include predictions that occurred during or after game start
                         # Allow some leeway for predictions slightly before game start
                         if relative_time >= -300:  # Allow 5 minutes before game start
-                            data.append({"ts": max(0, relative_time), "p_home_win": float(p_home_win)})
+                            data.append(
+                                {
+                                    "ts": max(0, relative_time),
+                                    "p_home_win": float(p_home_win),
+                                }
+                            )
                     else:
                         # No game start time available - use timestamp as-is if reasonable
                         # This shouldn't happen in normal operation
-                        data.append({"ts": ts_timestamp, "p_home_win": float(p_home_win)})
-                
+                        data.append(
+                            {"ts": ts_timestamp, "p_home_win": float(p_home_win)}
+                        )
+
                 return {"game_id": game_id, "data": data}
     except Exception as e:
         print(f"[gateway] Error fetching win probability history: {e}")
         import traceback
+
         traceback.print_exc()
         return {"game_id": game_id, "data": []}
 
@@ -372,32 +420,49 @@ async def get_game_rosters(game_id: str):
     try:
         boxscore = await fetch_nhl_boxscore(game_id)
         if not boxscore:
-            raise HTTPException(status_code=404, detail=f"Game {game_id} not found or boxscore unavailable")
-        
+            raise HTTPException(
+                status_code=404,
+                detail=f"Game {game_id} not found or boxscore unavailable",
+            )
+
         # Extract roster data
         home_team = boxscore.get("homeTeam", {})
         away_team = boxscore.get("awayTeam", {})
-        
+
         # Get roster from boxscore
         home_roster_data = home_team.get("roster", {})
         away_roster_data = away_team.get("roster", {})
-        
-        home_roster = home_roster_data.get("roster", []) if isinstance(home_roster_data, dict) else []
-        away_roster = away_roster_data.get("roster", []) if isinstance(away_roster_data, dict) else []
-        
+
+        home_roster = (
+            home_roster_data.get("roster", [])
+            if isinstance(home_roster_data, dict)
+            else []
+        )
+        away_roster = (
+            away_roster_data.get("roster", [])
+            if isinstance(away_roster_data, dict)
+            else []
+        )
+
         # Format roster players
         def format_player(player):
             """Format player data from roster"""
             return {
                 "id": player.get("playerId"),
-                "name": player.get("firstName", {}).get("default", "") + " " + player.get("lastName", {}).get("default", ""),
+                "name": player.get("firstName", {}).get("default", "")
+                + " "
+                + player.get("lastName", {}).get("default", ""),
                 "position": player.get("position"),
                 "number": player.get("sweaterNumber"),
             }
-        
-        home_roster_formatted = [format_player(p) for p in home_roster if p.get("playerId")]
-        away_roster_formatted = [format_player(p) for p in away_roster if p.get("playerId")]
-        
+
+        home_roster_formatted = [
+            format_player(p) for p in home_roster if p.get("playerId")
+        ]
+        away_roster_formatted = [
+            format_player(p) for p in away_roster if p.get("playerId")
+        ]
+
         return {
             "game_id": game_id,
             "home_team": {
@@ -405,15 +470,15 @@ async def get_game_rosters(game_id: str):
                 "name": home_team.get("commonName", {}).get("default", ""),
                 "abbrev": home_team.get("abbrev", ""),
                 "logo": home_team.get("logo", ""),
-                "roster": home_roster_formatted
+                "roster": home_roster_formatted,
             },
             "away_team": {
                 "id": away_team.get("id"),
                 "name": away_team.get("commonName", {}).get("default", ""),
                 "abbrev": away_team.get("abbrev", ""),
                 "logo": away_team.get("logo", ""),
-                "roster": away_roster_formatted
-            }
+                "roster": away_roster_formatted,
+            },
         }
     except Exception as e:
         print(f"[gateway] Error fetching rosters: {e}")
@@ -427,7 +492,7 @@ async def get_final_score(game_id: str):
         game_data = await fetch_nhl_play_by_play(game_id)
         if not game_data:
             raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
-        
+
         game_state = game_data.get("gameState", "")
         home_team_data = game_data.get("homeTeam", {})
         away_team_data = game_data.get("awayTeam", {})
@@ -439,7 +504,7 @@ async def get_final_score(game_id: str):
         away_abbrev = away_team_data.get("abbrev", "")
         home_score = home_team_data.get("score", 0)
         away_score = away_team_data.get("score", 0)
-        
+
         # Determine winner
         winner = None
         if home_score > away_score:
@@ -448,11 +513,11 @@ async def get_final_score(game_id: str):
             winner = "AWAY"
         else:
             winner = "TIE"
-        
+
         # Check if game went to overtime or shootout
         max_period = 3
         overtime_type = None
-        
+
         plays = game_data.get("plays", [])
         if plays:
             for play in plays:
@@ -464,7 +529,7 @@ async def get_final_score(game_id: str):
                         overtime_type = "OT"
                     elif period_number >= 5:
                         overtime_type = "SO"
-        
+
         return {
             "game_id": game_id,
             "game_state": game_state,
@@ -478,25 +543,27 @@ async def get_final_score(game_id: str):
             "home_score": home_score,
             "away_score": away_score,
             "winner": winner,
-            "overtime_type": overtime_type
+            "overtime_type": overtime_type,
         }
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching final score: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching final score: {str(e)}"
+        )
 
 
 @router.get("/{game_id}/powerplay")
 async def get_powerplay_status(game_id: str):
     """Get current power play status and time remaining"""
     r = get_redis()
-    
+
     try:
         # Fetch game data from NHL API
         game_data = await fetch_nhl_play_by_play(game_id)
         if not game_data:
             raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
-        
+
         # Get current game state
         game_state = game_data.get("gameState", "")
         if game_state not in ["LIVE", "CRIT"]:
@@ -504,9 +571,9 @@ async def get_powerplay_status(game_id: str):
                 "is_powerplay": False,
                 "team": None,
                 "time_remaining": None,
-                "team_logo": None
+                "team_logo": None,
             }
-        
+
         # Get plays from game data
         plays = game_data.get("plays", [])
         if not plays:
@@ -514,9 +581,9 @@ async def get_powerplay_status(game_id: str):
                 "is_powerplay": False,
                 "team": None,
                 "time_remaining": None,
-                "team_logo": None
+                "team_logo": None,
             }
-        
+
         # Get the most recent non-stoppage play
         current_play = None
         for p in reversed(plays):
@@ -524,15 +591,15 @@ async def get_powerplay_status(game_id: str):
             if tc not in [520, 516, 517, 524]:  # Skip stoppages
                 current_play = p
                 break
-        
+
         if not current_play:
             return {
                 "is_powerplay": False,
                 "team": None,
                 "time_remaining": None,
-                "team_logo": None
+                "team_logo": None,
             }
-        
+
         # Check situation code to determine if there's a power play
         situation_code = current_play.get("situationCode", "1551")
         if len(situation_code) < 4:
@@ -540,12 +607,12 @@ async def get_powerplay_status(game_id: str):
                 "is_powerplay": False,
                 "team": None,
                 "time_remaining": None,
-                "team_logo": None
+                "team_logo": None,
             }
-        
+
         away_skaters = int(situation_code[1]) if len(situation_code) >= 2 else 5
         home_skaters = int(situation_code[3]) if len(situation_code) >= 4 else 5
-        
+
         # Determine which team is on the power play based on skater count
         pp_team = None
         if away_skaters != home_skaters and away_skaters != 6 and home_skaters != 6:
@@ -553,44 +620,44 @@ async def get_powerplay_status(game_id: str):
                 pp_team = "HOME"
             elif away_skaters > home_skaters:
                 pp_team = "AWAY"
-        
+
         if not pp_team:
             return {
                 "is_powerplay": False,
                 "team": None,
                 "time_remaining": None,
-                "team_logo": None
+                "team_logo": None,
             }
-        
+
         # Get team IDs
         home_team_id = game_data.get("homeTeam", {}).get("id")
         away_team_id = game_data.get("awayTeam", {}).get("id")
-        
+
         # Find the most recent penalty event that matches the current power play
         most_recent_penalty = None
         current_time = current_play.get("timeInPeriod", "00:00")
         current_period = current_play.get("periodDescriptor", {}).get("number", 1)
-        
+
         for play in reversed(plays):
             type_code = play.get("typeCode")
             if type_code == 509:  # PENALTY
                 details = play.get("details", {})
                 event_owner_id = details.get("eventOwnerTeamId")
-                
+
                 # Determine which team took the penalty
                 penalty_team = None
                 if event_owner_id == home_team_id:
                     penalty_team = "AWAY"
                 elif event_owner_id == away_team_id:
                     penalty_team = "HOME"
-                
+
                 if penalty_team != pp_team:
                     continue
-                
+
                 penalty_duration = details.get("duration", 0)
                 penalty_time = play.get("timeInPeriod", "00:00")
                 period = play.get("periodDescriptor", {}).get("number", 1)
-                
+
                 # Calculate time elapsed since penalty
                 def time_to_seconds(time_str):
                     """Convert MM:SS time string to total seconds elapsed in period"""
@@ -599,10 +666,10 @@ async def get_powerplay_status(game_id: str):
                         return (20 * 60) - (minutes * 60 + seconds)
                     except (ValueError, TypeError):
                         return 0
-                
+
                 penalty_elapsed = time_to_seconds(penalty_time)
                 current_elapsed = time_to_seconds(current_time)
-                
+
                 # Calculate total time elapsed since penalty
                 if current_period == period:
                     time_elapsed = current_elapsed - penalty_elapsed
@@ -613,66 +680,70 @@ async def get_powerplay_status(game_id: str):
                         time_elapsed += (current_period - period - 1) * 20 * 60
                 else:
                     time_elapsed = penalty_duration * 60 + 1
-                
+
                 penalty_duration_seconds = penalty_duration * 60
                 time_remaining_seconds = max(0, penalty_duration_seconds - time_elapsed)
-                
+
                 if time_remaining_seconds > 0 and time_elapsed >= 0:
                     most_recent_penalty = {
                         "team": pp_team,
                         "duration": penalty_duration,
-                        "time_remaining": time_remaining_seconds
+                        "time_remaining": time_remaining_seconds,
                     }
                     break
-        
+
         if most_recent_penalty and most_recent_penalty["time_remaining"] > 0:
             # Get team logo for the team on PP
-            team_logo_key = f"game:{game_id}:{'home' if pp_team == 'HOME' else 'away'}_logo"
+            team_logo_key = (
+                f"game:{game_id}:{'home' if pp_team == 'HOME' else 'away'}_logo"
+            )
             team_logo = await r.get(team_logo_key)
-            
+
             if not team_logo:
                 if pp_team == "HOME":
                     team_logo = game_data.get("homeTeam", {}).get("logo", "")
                 else:
                     team_logo = game_data.get("awayTeam", {}).get("logo", "")
-            
+
             # Get player strengths from situation code
-            situation_code = current_play.get("situationCode", "1551") if current_play else "1551"
+            situation_code = (
+                current_play.get("situationCode", "1551") if current_play else "1551"
+            )
             away_skaters = int(situation_code[1]) if len(situation_code) >= 2 else 5
             home_skaters = int(situation_code[3]) if len(situation_code) >= 4 else 5
-            
+
             if pp_team == "HOME":
                 strength = f"{home_skaters} on {away_skaters}"
             else:
                 strength = f"{away_skaters} on {home_skaters}"
-            
+
             time_remaining_seconds = most_recent_penalty["time_remaining"]
             penalty_duration_seconds = most_recent_penalty["duration"] * 60
             time_elapsed = penalty_duration_seconds - time_remaining_seconds
-            
+
             return {
                 "is_powerplay": True,
                 "team": pp_team,
                 "time_remaining": time_remaining_seconds,
                 "time_elapsed": time_elapsed,
                 "team_logo": team_logo or None,
-                "strength": strength
+                "strength": strength,
             }
         else:
             return {
                 "is_powerplay": False,
                 "team": None,
                 "time_remaining": None,
-                "team_logo": None
+                "team_logo": None,
             }
-    
+
     except Exception as e:
         print(f"[gateway] Error getting power play status: {e}")
         return {
             "is_powerplay": False,
             "team": None,
             "time_remaining": None,
-            "team_logo": None
+            "team_logo": None,
         }
 
 
@@ -682,11 +753,14 @@ async def get_game_stats(game_id: str):
     try:
         boxscore = await fetch_nhl_boxscore(game_id)
         if not boxscore:
-            raise HTTPException(status_code=404, detail=f"Game {game_id} not found or boxscore unavailable")
-        
+            raise HTTPException(
+                status_code=404,
+                detail=f"Game {game_id} not found or boxscore unavailable",
+            )
+
         home_team = boxscore.get("homeTeam", {})
         away_team = boxscore.get("awayTeam", {})
-        
+
         # Extract team info
         home_team_name = home_team.get("commonName", {}).get("default", "")
         away_team_name = away_team.get("commonName", {}).get("default", "")
@@ -694,12 +768,12 @@ async def get_game_stats(game_id: str):
         away_team_logo = away_team.get("logo", "")
         home_team_abbrev = home_team.get("abbrev", "")
         away_team_abbrev = away_team.get("abbrev", "")
-        
+
         # Get player stats to sum up team totals
         player_stats = boxscore.get("playerByGameStats", {})
         home_players = player_stats.get("homeTeam", {})
         away_players = player_stats.get("awayTeam", {})
-        
+
         # Helper to sum stats from all players
         def sum_player_stat(players_dict, stat_key):
             total = 0
@@ -711,46 +785,70 @@ async def get_game_stats(game_id: str):
                         if isinstance(val, (int, float)):
                             total += val
             return int(total)
-        
+
         # Get shots directly from team objects
         home_shots = home_team.get("sog", 0)
         away_shots = away_team.get("sog", 0)
-        
+
         # Sum other stats from player data
         home_hits = sum_player_stat(home_players, "hits")
         away_hits = sum_player_stat(away_players, "hits")
-        
+
         home_blocked = sum_player_stat(home_players, "blockedShots")
         away_blocked = sum_player_stat(away_players, "blockedShots")
-        
+
         # Try to get takeaways/giveaways from team level first, then fall back to player sum
-        home_takeaways = (home_team.get("takeaways") if "takeaways" in home_team 
-                         else home_team.get("takeAways") if "takeAways" in home_team 
-                         else None)
+        home_takeaways = (
+            home_team.get("takeaways")
+            if "takeaways" in home_team
+            else home_team.get("takeAways")
+            if "takeAways" in home_team
+            else None
+        )
         if home_takeaways is None:
-            home_takeaways = sum_player_stat(home_players, "takeaways") or sum_player_stat(home_players, "takeAways")
-        
-        away_takeaways = (away_team.get("takeaways") if "takeaways" in away_team 
-                         else away_team.get("takeAways") if "takeAways" in away_team 
-                         else None)
+            home_takeaways = sum_player_stat(
+                home_players, "takeaways"
+            ) or sum_player_stat(home_players, "takeAways")
+
+        away_takeaways = (
+            away_team.get("takeaways")
+            if "takeaways" in away_team
+            else away_team.get("takeAways")
+            if "takeAways" in away_team
+            else None
+        )
         if away_takeaways is None:
-            away_takeaways = sum_player_stat(away_players, "takeaways") or sum_player_stat(away_players, "takeAways")
-        
-        home_giveaways = (home_team.get("giveaways") if "giveaways" in home_team 
-                         else home_team.get("giveAways") if "giveAways" in home_team 
-                         else None)
+            away_takeaways = sum_player_stat(
+                away_players, "takeaways"
+            ) or sum_player_stat(away_players, "takeAways")
+
+        home_giveaways = (
+            home_team.get("giveaways")
+            if "giveaways" in home_team
+            else home_team.get("giveAways")
+            if "giveAways" in home_team
+            else None
+        )
         if home_giveaways is None:
-            home_giveaways = sum_player_stat(home_players, "giveaways") or sum_player_stat(home_players, "giveAways")
-        
-        away_giveaways = (away_team.get("giveaways") if "giveaways" in away_team 
-                         else away_team.get("giveAways") if "giveAways" in away_team 
-                         else None)
+            home_giveaways = sum_player_stat(
+                home_players, "giveaways"
+            ) or sum_player_stat(home_players, "giveAways")
+
+        away_giveaways = (
+            away_team.get("giveaways")
+            if "giveaways" in away_team
+            else away_team.get("giveAways")
+            if "giveAways" in away_team
+            else None
+        )
         if away_giveaways is None:
-            away_giveaways = sum_player_stat(away_players, "giveaways") or sum_player_stat(away_players, "giveAways")
-        
+            away_giveaways = sum_player_stat(
+                away_players, "giveaways"
+            ) or sum_player_stat(away_players, "giveAways")
+
         home_pim = sum_player_stat(home_players, "pim")
         away_pim = sum_player_stat(away_players, "pim")
-        
+
         # Calculate faceoff percentage from actual play-by-play data
         async def calculate_faceoff_pct_from_plays(game_id, home_team_id, away_team_id):
             """Count actual faceoffs from play-by-play data"""
@@ -758,31 +856,31 @@ async def get_game_stats(game_id: str):
                 game_data = await fetch_nhl_play_by_play(game_id)
                 if not game_data:
                     return 0, 0
-                
+
                 plays = game_data.get("plays", [])
                 if not plays:
                     return 0, 0
-                
+
                 home_won = 0
                 away_won = 0
                 total_faceoffs = 0
-                
+
                 # Count faceoffs (type_code 502)
                 for play in plays:
                     type_code = play.get("typeCode")
                     if type_code == 502:  # FACEOFF
                         details = play.get("details", {})
                         event_owner_team_id = details.get("eventOwnerTeamId")
-                        
+
                         if event_owner_team_id == home_team_id:
                             home_won += 1
                         elif event_owner_team_id == away_team_id:
                             away_won += 1
                         else:
                             continue
-                        
+
                         total_faceoffs += 1
-                
+
                 if total_faceoffs > 0:
                     home_pct = round((home_won / total_faceoffs) * 100, 1)
                     away_pct = round((away_won / total_faceoffs) * 100, 1)
@@ -792,18 +890,20 @@ async def get_game_stats(game_id: str):
             except Exception as e:
                 print(f"[gateway] Error calculating faceoff percentage: {e}")
                 return 0, 0
-        
+
         # Get team IDs for faceoff calculation
         home_team_id = home_team.get("id")
         away_team_id = away_team.get("id")
-        
+
         # Calculate faceoff percentages from actual play-by-play data
-        home_fo_pct, away_fo_pct = await calculate_faceoff_pct_from_plays(game_id, home_team_id, away_team_id)
-        
+        home_fo_pct, away_fo_pct = await calculate_faceoff_pct_from_plays(
+            game_id, home_team_id, away_team_id
+        )
+
         # Calculate power play stats - get from team stats first, fallback to player stats
         home_pp_goals = None
         away_pp_goals = None
-        
+
         # Check team-level stats first
         for field_name in ["powerPlayGoals", "ppGoals", "powerPlayG", "ppG"]:
             if field_name in home_team:
@@ -816,14 +916,18 @@ async def get_game_stats(game_id: str):
                     away_pp_goals = val
             if home_pp_goals is not None and away_pp_goals is not None:
                 break
-        
+
         # Check teamStats.teamSkaterStats (NHL API structure)
         if home_pp_goals is None or away_pp_goals is None:
             home_stats = home_team.get("teamStats", {})
             away_stats = away_team.get("teamStats", {})
-            home_skater_stats = home_stats.get("teamSkaterStats", {}) if home_stats else {}
-            away_skater_stats = away_stats.get("teamSkaterStats", {}) if away_stats else {}
-            
+            home_skater_stats = (
+                home_stats.get("teamSkaterStats", {}) if home_stats else {}
+            )
+            away_skater_stats = (
+                away_stats.get("teamSkaterStats", {}) if away_stats else {}
+            )
+
             if home_skater_stats:
                 for field_name in ["powerPlayGoals", "ppGoals", "powerPlayG", "ppG"]:
                     if field_name in home_skater_stats:
@@ -838,42 +942,44 @@ async def get_game_stats(game_id: str):
                         if val is not None and val != "":
                             away_pp_goals = val
                             break
-        
+
         # Fallback to summing player stats if not found in team stats
         if home_pp_goals is None:
             home_pp_goals = sum_player_stat(home_players, "powerPlayGoals")
         if away_pp_goals is None:
             away_pp_goals = sum_player_stat(away_players, "powerPlayGoals")
-        
+
         # Ensure we have valid integers
         home_pp_goals = int(home_pp_goals) if home_pp_goals is not None else 0
         away_pp_goals = int(away_pp_goals) if away_pp_goals is not None else 0
-        
+
         # Calculate power play opportunities by counting actual penalties from play-by-play
-        async def calculate_pp_opportunities_from_plays(game_id, home_team_id, away_team_id):
+        async def calculate_pp_opportunities_from_plays(
+            game_id, home_team_id, away_team_id
+        ):
             """Count actual power play opportunities by counting penalties"""
             try:
                 game_data = await fetch_nhl_play_by_play(game_id)
                 if not game_data:
                     return 0, 0
-                
+
                 plays = game_data.get("plays", [])
                 if not plays:
                     return 0, 0
-                
+
                 home_pp_opp = 0
                 away_pp_opp = 0
                 penalty_times = {}
-                
+
                 for play in plays:
                     type_code = play.get("typeCode")
                     if type_code == 509:  # PENALTY
                         details = play.get("details", {})
                         penalty_duration = details.get("duration", 0)
-                        
+
                         if penalty_duration >= 2:
                             event_owner_team_id = details.get("eventOwnerTeamId")
-                            
+
                             period = play.get("periodDescriptor", {}).get("number", 1)
                             time_in_period = play.get("timeInPeriod", "00:00")
                             try:
@@ -881,14 +987,14 @@ async def get_game_stats(game_id: str):
                                 timestamp_key = f"{period}:{minutes}:{seconds}"
                             except (ValueError, TypeError):
                                 timestamp_key = None
-                            
+
                             if event_owner_team_id == home_team_id:
                                 if timestamp_key and timestamp_key in penalty_times:
                                     other_penalty = penalty_times[timestamp_key]
                                     if other_penalty["team"] == "away":
                                         penalty_times.pop(timestamp_key)
                                         continue
-                                
+
                                 away_pp_opp += 1
                                 if timestamp_key:
                                     penalty_times[timestamp_key] = {"team": "home"}
@@ -898,23 +1004,32 @@ async def get_game_stats(game_id: str):
                                     if other_penalty["team"] == "home":
                                         penalty_times.pop(timestamp_key)
                                         continue
-                                
+
                                 home_pp_opp += 1
                                 if timestamp_key:
                                     penalty_times[timestamp_key] = {"team": "away"}
-                
-                print(f"[gateway] Calculated PP opportunities from play-by-play: home={home_pp_opp}, away={away_pp_opp}")
+
+                print(
+                    f"[gateway] Calculated PP opportunities from play-by-play: home={home_pp_opp}, away={away_pp_opp}"
+                )
                 return home_pp_opp, away_pp_opp
             except Exception as e:
                 print(f"[gateway] Error calculating power play opportunities: {e}")
                 return 0, 0
-        
+
         # First, try to get power play opportunities directly from boxscore team stats
         home_pp_opp = None
         away_pp_opp = None
-        
+
         # Check team-level stats first
-        for field_name in ["powerPlayOpportunities", "powerPlayOpps", "ppOpportunities", "ppOpps", "powerPlayOps", "ppOpportunities"]:
+        for field_name in [
+            "powerPlayOpportunities",
+            "powerPlayOpps",
+            "ppOpportunities",
+            "ppOpps",
+            "powerPlayOps",
+            "ppOpportunities",
+        ]:
             if field_name in home_team:
                 val = home_team.get(field_name)
                 if val is not None and val != "":
@@ -925,123 +1040,135 @@ async def get_game_stats(game_id: str):
                     away_pp_opp = val
             if home_pp_opp is not None and away_pp_opp is not None:
                 break
-        
+
         # Check teamStats.teamSkaterStats (NHL API structure)
         if home_pp_opp is None or away_pp_opp is None:
             home_stats = home_team.get("teamStats", {})
             away_stats = away_team.get("teamStats", {})
-            home_skater_stats = home_stats.get("teamSkaterStats", {}) if home_stats else {}
-            away_skater_stats = away_stats.get("teamSkaterStats", {}) if away_stats else {}
-            
+            home_skater_stats = (
+                home_stats.get("teamSkaterStats", {}) if home_stats else {}
+            )
+            away_skater_stats = (
+                away_stats.get("teamSkaterStats", {}) if away_stats else {}
+            )
+
             if home_skater_stats:
-                for field_name in ["powerPlayOpportunities", "powerPlayOpps", "ppOpportunities"]:
+                for field_name in [
+                    "powerPlayOpportunities",
+                    "powerPlayOpps",
+                    "ppOpportunities",
+                ]:
                     if field_name in home_skater_stats:
                         val = home_skater_stats.get(field_name)
                         if val is not None and val != "":
                             home_pp_opp = val
                             break
             if away_skater_stats:
-                for field_name in ["powerPlayOpportunities", "powerPlayOpps", "ppOpportunities"]:
+                for field_name in [
+                    "powerPlayOpportunities",
+                    "powerPlayOpps",
+                    "ppOpportunities",
+                ]:
                     if field_name in away_skater_stats:
                         val = away_skater_stats.get(field_name)
                         if val is not None and val != "":
                             away_pp_opp = val
                             break
-            
+
             # Also check teamStats directly (fallback)
             if home_pp_opp is None and home_stats:
-                for field_name in ["powerPlayOpportunities", "powerPlayOpps", "ppOpportunities"]:
+                for field_name in [
+                    "powerPlayOpportunities",
+                    "powerPlayOpps",
+                    "ppOpportunities",
+                ]:
                     if field_name in home_stats:
                         val = home_stats.get(field_name)
                         if val is not None and val != "":
                             home_pp_opp = val
                             break
             if away_pp_opp is None and away_stats:
-                for field_name in ["powerPlayOpportunities", "powerPlayOpps", "ppOpportunities"]:
+                for field_name in [
+                    "powerPlayOpportunities",
+                    "powerPlayOpps",
+                    "ppOpportunities",
+                ]:
                     if field_name in away_stats:
                         val = away_stats.get(field_name)
                         if val is not None and val != "":
                             away_pp_opp = val
                             break
-        
+
         # If not found in team stats, try to calculate from play-by-play
         if home_pp_opp is None or away_pp_opp is None:
-            print(f"[gateway] PP opportunities not in boxscore for game {game_id}, calculating from play-by-play")
-            calculated_home_pp_opp, calculated_away_pp_opp = await calculate_pp_opportunities_from_plays(game_id, home_team_id, away_team_id)
-            
+            print(
+                f"[gateway] PP opportunities not in boxscore for game {game_id}, calculating from play-by-play"
+            )
+            (
+                calculated_home_pp_opp,
+                calculated_away_pp_opp,
+            ) = await calculate_pp_opportunities_from_plays(
+                game_id, home_team_id, away_team_id
+            )
+
             if home_pp_opp is None:
                 home_pp_opp = calculated_home_pp_opp
             if away_pp_opp is None:
                 away_pp_opp = calculated_away_pp_opp
         else:
-            print(f"[gateway] Using PP opportunities from boxscore for game {game_id}: home={home_pp_opp}, away={away_pp_opp}")
-        
+            print(
+                f"[gateway] Using PP opportunities from boxscore for game {game_id}: home={home_pp_opp}, away={away_pp_opp}"
+            )
+
         # Ensure we have valid integers
         home_pp_opp = int(home_pp_opp) if home_pp_opp is not None else 0
         away_pp_opp = int(away_pp_opp) if away_pp_opp is not None else 0
-        
+
         # Calculate PP percentage (only if we have opportunities)
-        home_pp_pct = round((home_pp_goals / home_pp_opp * 100), 1) if home_pp_opp > 0 else 0.0
-        away_pp_pct = round((away_pp_goals / away_pp_opp * 100), 1) if away_pp_opp > 0 else 0.0
-        
+        home_pp_pct = (
+            round((home_pp_goals / home_pp_opp * 100), 1) if home_pp_opp > 0 else 0.0
+        )
+        away_pp_pct = (
+            round((away_pp_goals / away_pp_opp * 100), 1) if away_pp_opp > 0 else 0.0
+        )
+
         stats = {
             "shots": {
                 "home": int(home_shots) if home_shots else 0,
-                "away": int(away_shots) if away_shots else 0
+                "away": int(away_shots) if away_shots else 0,
             },
-            "hits": {
-                "home": home_hits,
-                "away": away_hits
-            },
-            "faceoff_win_pct": {
-                "home": home_fo_pct,
-                "away": away_fo_pct
-            },
-            "penalty_minutes": {
-                "home": home_pim,
-                "away": away_pim
-            },
-            "power_play_pct": {
-                "home": home_pp_pct,
-                "away": away_pp_pct
-            },
-            "power_play_opportunities": {
-                "home": home_pp_opp,
-                "away": away_pp_opp
-            },
-            "blocked_shots": {
-                "home": home_blocked,
-                "away": away_blocked
-            },
-            "takeaways": {
-                "home": home_takeaways,
-                "away": away_takeaways
-            },
-            "giveaways": {
-                "home": home_giveaways,
-                "away": away_giveaways
-            }
+            "hits": {"home": home_hits, "away": away_hits},
+            "faceoff_win_pct": {"home": home_fo_pct, "away": away_fo_pct},
+            "penalty_minutes": {"home": home_pim, "away": away_pim},
+            "power_play_pct": {"home": home_pp_pct, "away": away_pp_pct},
+            "power_play_opportunities": {"home": home_pp_opp, "away": away_pp_opp},
+            "blocked_shots": {"home": home_blocked, "away": away_blocked},
+            "takeaways": {"home": home_takeaways, "away": away_takeaways},
+            "giveaways": {"home": home_giveaways, "away": away_giveaways},
         }
-        
+
         return {
             "game_id": game_id,
             "home_team": {
                 "name": home_team_name,
                 "logo": home_team_logo,
-                "abbrev": home_team_abbrev
+                "abbrev": home_team_abbrev,
             },
             "away_team": {
                 "name": away_team_name,
                 "logo": away_team_logo,
-                "abbrev": away_team_abbrev
+                "abbrev": away_team_abbrev,
             },
-            "stats": stats
+            "stats": stats,
         }
     except Exception as e:
         print(f"[gateway] Error fetching game stats: {e}")
         import traceback
+
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Error fetching game stats: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching game stats: {str(e)}"
+        )
 
 
 @router.get("/{game_id}/player-stats")
@@ -1050,41 +1177,52 @@ async def get_player_stats(game_id: str):
     try:
         boxscore = await fetch_nhl_boxscore(game_id)
         if not boxscore:
-            raise HTTPException(status_code=404, detail=f"Game {game_id} not found or boxscore unavailable")
-        
+            raise HTTPException(
+                status_code=404,
+                detail=f"Game {game_id} not found or boxscore unavailable",
+            )
+
         home_team = boxscore.get("homeTeam", {})
         away_team = boxscore.get("awayTeam", {})
-        
+
         # Extract team info
         home_team_name = home_team.get("commonName", {}).get("default", "")
         away_team_name = away_team.get("commonName", {}).get("default", "")
         home_team_logo = home_team.get("logo", "")
         away_team_logo = away_team.get("logo", "")
-        
+
         # Get player stats
         player_stats = boxscore.get("playerByGameStats", {})
         home_players_raw = player_stats.get("homeTeam", {})
         away_players_raw = player_stats.get("awayTeam", {})
-        
+
         r = get_redis()
-        
+
         # Helper function to format player name
         def format_player_name(first_name: str, last_name: str) -> str:
             if not first_name or not last_name:
                 return last_name or first_name or "Unknown"
             return f"{first_name} {last_name}"
-        
+
         # Helper function to process skater stats
         async def process_skater(player_data: dict, team: str) -> dict:
             player_id = player_data.get("playerId")
             if not player_id:
                 return None
-            
+
             # Get player name
             player_name_obj = player_data.get("name", {})
-            first_name = player_name_obj.get("default", "").split()[0] if player_name_obj.get("default") else ""
-            last_name = " ".join(player_name_obj.get("default", "").split()[1:]) if player_name_obj.get("default") else ""
-            
+            first_name = (
+                player_name_obj.get("default", "").split()[0]
+                if player_name_obj.get("default")
+                else ""
+            )
+            last_name = (
+                " ".join(player_name_obj.get("default", "").split()[1:])
+                if player_name_obj.get("default")
+                else ""
+            )
+
             # Try to get from player lookup if not available
             if not first_name or not last_name:
                 player_name = await get_player_name(player_id, r)
@@ -1092,15 +1230,15 @@ async def get_player_stats(game_id: str):
                     name_parts = player_name.split(" ", 1)
                     first_name = name_parts[0] if len(name_parts) > 0 else ""
                     last_name = name_parts[1] if len(name_parts) > 1 else ""
-            
+
             formatted_name = format_player_name(first_name, last_name)
-            
+
             # Get player headshot
             headshot_url = await get_player_headshot(player_id, r)
-            
+
             # Get position
             position = player_data.get("position", "")
-            
+
             # Get stats
             pts = player_data.get("points", 0) or 0
             goals = player_data.get("goals", 0) or 0
@@ -1109,13 +1247,15 @@ async def get_player_stats(game_id: str):
             pim = player_data.get("pim", 0) or 0
             sog = player_data.get("shots", 0) or 0
             hits = player_data.get("hits", 0) or 0
-            
+
             # Get TOI (Time On Ice) - typically in seconds, format as MM:SS
-            toi_seconds = player_data.get("toi", 0) or player_data.get("timeOnIce", 0) or 0
+            toi_seconds = (
+                player_data.get("toi", 0) or player_data.get("timeOnIce", 0) or 0
+            )
             if isinstance(toi_seconds, str):
-                if ':' in toi_seconds:
+                if ":" in toi_seconds:
                     try:
-                        parts = toi_seconds.split(':')
+                        parts = toi_seconds.split(":")
                         toi_seconds = int(parts[0]) * 60 + int(parts[1])
                     except (ValueError, IndexError):
                         toi_seconds = 0
@@ -1128,7 +1268,7 @@ async def get_player_stats(game_id: str):
             toi_minutes = toi_seconds // 60
             toi_secs = toi_seconds % 60
             toi_formatted = f"{toi_minutes}:{toi_secs:02d}"
-            
+
             return {
                 "player_id": player_id,
                 "name": formatted_name,
@@ -1142,21 +1282,29 @@ async def get_player_stats(game_id: str):
                     "pim": int(pim),
                     "sog": int(sog),
                     "hits": int(hits),
-                    "toi": toi_formatted
-                }
+                    "toi": toi_formatted,
+                },
             }
-        
+
         # Helper function to process goalie stats
         async def process_goalie(player_data: dict, team: str) -> dict:
             player_id = player_data.get("playerId")
             if not player_id:
                 return None
-            
+
             # Get player name
             player_name_obj = player_data.get("name", {})
-            first_name = player_name_obj.get("default", "").split()[0] if player_name_obj.get("default") else ""
-            last_name = " ".join(player_name_obj.get("default", "").split()[1:]) if player_name_obj.get("default") else ""
-            
+            first_name = (
+                player_name_obj.get("default", "").split()[0]
+                if player_name_obj.get("default")
+                else ""
+            )
+            last_name = (
+                " ".join(player_name_obj.get("default", "").split()[1:])
+                if player_name_obj.get("default")
+                else ""
+            )
+
             # Try to get from player lookup if not available
             if not first_name or not last_name:
                 player_name = await get_player_name(player_id, r)
@@ -1164,24 +1312,24 @@ async def get_player_stats(game_id: str):
                     name_parts = player_name.split(" ", 1)
                     first_name = name_parts[0] if len(name_parts) > 0 else ""
                     last_name = name_parts[1] if len(name_parts) > 1 else ""
-            
+
             formatted_name = format_player_name(first_name, last_name)
-            
+
             # Get player headshot
             headshot_url = await get_player_headshot(player_id, r)
-            
+
             # Get position
             position = player_data.get("position", "G")
-            
+
             # Get goalie stats - ensure they're integers, not strings
             def safe_int(value, default=0):
                 """Safely convert value to int, handling strings and None"""
                 if value is None:
                     return default
                 if isinstance(value, str):
-                    if '/' in value:
+                    if "/" in value:
                         try:
-                            return int(value.split('/')[0])
+                            return int(value.split("/")[0])
                         except (ValueError, IndexError):
                             return default
                     else:
@@ -1193,7 +1341,7 @@ async def get_player_stats(game_id: str):
                     return int(value)
                 except (ValueError, TypeError):
                     return default
-            
+
             saves = safe_int(player_data.get("saves"), 0)
             shots = safe_int(player_data.get("shotsAgainst"), 0)
             pp_saves = safe_int(player_data.get("powerPlaySaves"), 0)
@@ -1201,13 +1349,15 @@ async def get_player_stats(game_id: str):
             sh_saves = safe_int(player_data.get("shorthandedSaves"), 0)
             sh_shots = safe_int(player_data.get("shorthandedShotsAgainst"), 0)
             pim = safe_int(player_data.get("pim"), 0)
-            
+
             # Get TOI (Time On Ice) - typically in seconds, format as MM:SS
-            toi_seconds = player_data.get("toi", 0) or player_data.get("timeOnIce", 0) or 0
+            toi_seconds = (
+                player_data.get("toi", 0) or player_data.get("timeOnIce", 0) or 0
+            )
             if isinstance(toi_seconds, str):
-                if ':' in toi_seconds:
+                if ":" in toi_seconds:
                     try:
-                        parts = toi_seconds.split(':')
+                        parts = toi_seconds.split(":")
                         toi_seconds = int(parts[0]) * 60 + int(parts[1])
                     except (ValueError, IndexError):
                         toi_seconds = 0
@@ -1220,10 +1370,10 @@ async def get_player_stats(game_id: str):
             toi_minutes = toi_seconds // 60
             toi_secs = toi_seconds % 60
             toi_formatted = f"{toi_minutes}:{toi_secs:02d}"
-            
+
             # Calculate save percentage
             sv_pct = (saves / shots * 100) if shots > 0 else 0.0
-            
+
             return {
                 "player_id": player_id,
                 "name": formatted_name,
@@ -1235,14 +1385,14 @@ async def get_player_stats(game_id: str):
                     "pp_saves_shots": f"{pp_saves}/{pp_shots}",
                     "sh_saves_shots": f"{sh_saves}/{sh_shots}",
                     "pim": pim,
-                    "toi": toi_formatted
-                }
+                    "toi": toi_formatted,
+                },
             }
-        
+
         # Process home team players
         home_skaters = []
         home_goalies = []
-        
+
         for position_group in ["forwards", "defense"]:
             players = home_players_raw.get(position_group, [])
             for player in players:
@@ -1252,7 +1402,7 @@ async def get_player_stats(game_id: str):
                         toi = skater_data.get("stats", {}).get("toi", "0:00")
                         if toi and toi != "0:00":
                             home_skaters.append(skater_data)
-        
+
         goalies = home_players_raw.get("goalies", [])
         for player in goalies:
             if isinstance(player, dict) and player.get("playerId"):
@@ -1261,11 +1411,11 @@ async def get_player_stats(game_id: str):
                     toi = goalie_data.get("stats", {}).get("toi", "0:00")
                     if toi and toi != "0:00":
                         home_goalies.append(goalie_data)
-        
+
         # Process away team players
         away_skaters = []
         away_goalies = []
-        
+
         for position_group in ["forwards", "defense"]:
             players = away_players_raw.get(position_group, [])
             for player in players:
@@ -1275,7 +1425,7 @@ async def get_player_stats(game_id: str):
                         toi = skater_data.get("stats", {}).get("toi", "0:00")
                         if toi and toi != "0:00":
                             away_skaters.append(skater_data)
-        
+
         goalies = away_players_raw.get("goalies", [])
         for player in goalies:
             if isinstance(player, dict) and player.get("playerId"):
@@ -1284,31 +1434,38 @@ async def get_player_stats(game_id: str):
                     toi = goalie_data.get("stats", {}).get("toi", "0:00")
                     if toi and toi != "0:00":
                         away_goalies.append(goalie_data)
-        
+
         # Sort skaters by points (descending), then goals
-        home_skaters.sort(key=lambda x: (x["stats"]["pts"], x["stats"]["goals"]), reverse=True)
-        away_skaters.sort(key=lambda x: (x["stats"]["pts"], x["stats"]["goals"]), reverse=True)
-        
+        home_skaters.sort(
+            key=lambda x: (x["stats"]["pts"], x["stats"]["goals"]), reverse=True
+        )
+        away_skaters.sort(
+            key=lambda x: (x["stats"]["pts"], x["stats"]["goals"]), reverse=True
+        )
+
         return {
             "game_id": game_id,
             "home_team": {
                 "name": home_team_name,
                 "logo": home_team_logo,
                 "skaters": home_skaters,
-                "goalies": home_goalies
+                "goalies": home_goalies,
             },
             "away_team": {
                 "name": away_team_name,
                 "logo": away_team_logo,
                 "skaters": away_skaters,
-                "goalies": away_goalies
-            }
+                "goalies": away_goalies,
+            },
         }
     except Exception as e:
         print(f"[gateway] Error fetching player stats: {e}")
         import traceback
+
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Error fetching player stats: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching player stats: {str(e)}"
+        )
 
 
 @router.get("/{game_id}/winprob/friendly")
@@ -1323,17 +1480,14 @@ async def get_winprob_friendly(game_id: str):
         if ingestion_status == "in_progress":
             raise HTTPException(
                 status_code=202,
-                detail="Ingestion in progress. Please wait 60-90 seconds and try again. Check status at GET /v1/games/{game_id}/status"
+                detail="Ingestion in progress. Please wait 60-90 seconds and try again. Check status at GET /v1/games/{game_id}/status",
             )
         # For failed or no ingestion, return a basic response with calculated win probability
         try:
             game_data = await fetch_nhl_play_by_play(game_id)
             if not game_data:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Game {game_id} not found"
-                )
-            
+                raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
+
             # Get basic game info to return a minimal response
             home_team_data = game_data.get("homeTeam", {})
             away_team_data = game_data.get("awayTeam", {})
@@ -1343,14 +1497,14 @@ async def get_winprob_friendly(game_id: str):
             away_logo = away_team_data.get("logo", "")
             home_abbrev = home_team_data.get("abbrev", "")
             away_abbrev = away_team_data.get("abbrev", "")
-            
+
             game_state = game_data.get("gameState", "")
             is_live = game_state in ["LIVE", "CRIT"]
-            
+
             # Get scores
             home_score = game_data.get("homeScore", 0) or home_team_data.get("score", 0)
             away_score = game_data.get("awayScore", 0) or away_team_data.get("score", 0)
-            
+
             # Get period and time
             period = None
             time_in_period = ""
@@ -1362,7 +1516,7 @@ async def get_winprob_friendly(game_id: str):
                         time_in_period = play.get("timeInPeriod", "00:00")
                         period = play.get("periodDescriptor", {}).get("number", 1)
                         break
-            
+
             # Calculate win probability based on current game state
             p_home = calculate_win_probability(
                 home_score=int(home_score) if home_score else 0,
@@ -1370,25 +1524,33 @@ async def get_winprob_friendly(game_id: str):
                 game_state=game_state,
                 period=period,
                 time_in_period=time_in_period,
-                plays=plays
+                plays=plays,
             )
             p_away = 1.0 - p_home
-            
+
             # Get current situation from Redis state if available
             state_key = f"state:{game_id}"
             state = await r.hgetall(state_key)
             strength = state.get("strength", "EV")
             empty_net_str = state.get("empty_net", "False")
-            empty_net = empty_net_str.lower() == "true" if isinstance(empty_net_str, str) else bool(empty_net_str)
+            empty_net = (
+                empty_net_str.lower() == "true"
+                if isinstance(empty_net_str, str)
+                else bool(empty_net_str)
+            )
             last_event = state.get("last_event", "Game in progress")
             last_player_id_str = state.get("last_player_id", "")
-            last_player_id = int(last_player_id_str) if last_player_id_str and last_player_id_str != "None" else None
-            
+            last_player_id = (
+                int(last_player_id_str)
+                if last_player_id_str and last_player_id_str != "None"
+                else None
+            )
+
             # Look up player name if available
             last_player_name = None
             if last_player_id:
                 last_player_name = await get_player_name(last_player_id, r)
-            
+
             # Format strength
             strength_names = {
                 "EV": "Even Strength (5v5)",
@@ -1397,13 +1559,17 @@ async def get_winprob_friendly(game_id: str):
                 "EN": "Empty Net",
                 "ENPP": "Empty Net + Power Play",
                 "ENPK": "Empty Net + Shorthanded",
-                "SH": "Shorthanded"
+                "SH": "Shorthanded",
             }
             situation_parts = [strength_names.get(strength, strength)]
             if empty_net and strength not in ["EN", "ENPP", "ENPK"]:
                 situation_parts.append("Empty Net")
-            situation_description = " + ".join(situation_parts) if len(situation_parts) > 1 else situation_parts[0]
-            
+            situation_description = (
+                " + ".join(situation_parts)
+                if len(situation_parts) > 1
+                else situation_parts[0]
+            )
+
             # Determine favorite
             if p_home > 0.55:
                 favorite = f"{home_team} (favored)"
@@ -1411,7 +1577,7 @@ async def get_winprob_friendly(game_id: str):
                 favorite = f"{away_team} (favored)"
             else:
                 favorite = "Close game"
-            
+
             # Return basic response with calculated win probability
             return {
                 "game": {
@@ -1421,46 +1587,46 @@ async def get_winprob_friendly(game_id: str):
                     "game_state": game_state,
                     "period": period,
                     "time_in_period": time_in_period,
-                    "favorite": favorite
+                    "favorite": favorite,
                 },
                 "score": {
                     "home": {
                         "team": home_team,
                         "goals": int(home_score) if home_score else 0,
                         "logo": home_logo,
-                        "abbrev": home_abbrev
+                        "abbrev": home_abbrev,
                     },
                     "away": {
                         "team": away_team,
                         "goals": int(away_score) if away_score else 0,
                         "logo": away_logo,
-                        "abbrev": away_abbrev
-                    }
+                        "abbrev": away_abbrev,
+                    },
                 },
                 "win_probability": {
                     home_team: round(p_home * 100, 1),
                     away_team: round(p_away * 100, 1),
-                    "summary": f"{home_team}: {round(p_home * 100, 1)}% | {away_team}: {round(p_away * 100, 1)}%"
+                    "summary": f"{home_team}: {round(p_home * 100, 1)}% | {away_team}: {round(p_away * 100, 1)}%",
                 },
                 "current_situation": {
                     "strength": situation_description,
                     "empty_net": empty_net,
                     "last_event": last_event,
-                    "last_player": last_player_name
+                    "last_player": last_player_name,
                 },
                 "favorite": favorite,
                 "spread": None,
                 "over_under": None,
-                "confidence": "Low"  # Basic calculation, not from model
+                "confidence": "Low",  # Basic calculation, not from model
             }
         except HTTPException:
             raise
         except Exception:
             raise HTTPException(
                 status_code=404,
-                detail=f"No prediction yet for game {game_id}. Start ingestion with POST /v1/games/{game_id}/start"
+                detail=f"No prediction yet for game {game_id}. Start ingestion with POST /v1/games/{game_id}/start",
             )
-    
+
     try:
         # Get current game time from NHL API
         game_data = await fetch_nhl_play_by_play(game_id)
@@ -1468,33 +1634,37 @@ async def get_winprob_friendly(game_id: str):
         period = None
         time_in_period = ""
         plays = []
-        
+
         # Get current score from Redis state
         state_key = f"state:{game_id}"
         state = await r.hgetall(state_key)
-        
+
         home_score = int(state.get("home_score", 0))
         away_score = int(state.get("away_score", 0))
-        
+
         if game_data:
             game_state = game_data.get("gameState", "")
             period_descriptor = game_data.get("periodDescriptor", {})
             period = period_descriptor.get("number", 1)
-            
+
             # For live games, get current scores from NHL API (more up-to-date than Redis)
             if game_state in ["LIVE", "CRIT"]:
                 home_team_data = game_data.get("homeTeam", {})
                 away_team_data = game_data.get("awayTeam", {})
-                api_home_score = game_data.get("homeScore") or home_team_data.get("score", 0)
-                api_away_score = game_data.get("awayScore") or away_team_data.get("score", 0)
-                
+                api_home_score = game_data.get("homeScore") or home_team_data.get(
+                    "score", 0
+                )
+                api_away_score = game_data.get("awayScore") or away_team_data.get(
+                    "score", 0
+                )
+
                 if api_home_score is not None and api_away_score is not None:
                     home_score = int(api_home_score)
                     away_score = int(api_away_score)
                     # Update Redis state with latest scores
                     await r.hset(state_key, "home_score", str(home_score))
                     await r.hset(state_key, "away_score", str(away_score))
-            
+
             # Get the most recent play to get current time
             plays = game_data.get("plays", [])
             if plays:
@@ -1504,7 +1674,7 @@ async def get_winprob_friendly(game_id: str):
                         time_in_period = play.get("timeInPeriod", "00:00")
                         period = play.get("periodDescriptor", {}).get("number", period)
                         break
-        
+
         # Calculate win probability based on current game state
         p_home = calculate_win_probability(
             home_score=home_score,
@@ -1512,21 +1682,29 @@ async def get_winprob_friendly(game_id: str):
             game_state=game_state,
             period=period,
             time_in_period=time_in_period,
-            plays=plays
+            plays=plays,
         )
         p_away = 1.0 - p_home
         strength = state.get("strength", "EV")
         empty_net_str = state.get("empty_net", "False")
-        empty_net = empty_net_str.lower() == "true" if isinstance(empty_net_str, str) else bool(empty_net_str)
+        empty_net = (
+            empty_net_str.lower() == "true"
+            if isinstance(empty_net_str, str)
+            else bool(empty_net_str)
+        )
         last_event = state.get("last_event", "Unknown")
         last_player_id_str = state.get("last_player_id", "")
-        last_player_id = int(last_player_id_str) if last_player_id_str and last_player_id_str != "None" else None
-        
+        last_player_id = (
+            int(last_player_id_str)
+            if last_player_id_str and last_player_id_str != "None"
+            else None
+        )
+
         # Look up player name with Redis caching
         last_player_name = None
         if last_player_id:
             last_player_name = await get_player_name(last_player_id, r)
-        
+
         # Get team names and logos from cache or NHL API
         home_team = await r.get(f"game:{game_id}:home_team")
         away_team = await r.get(f"game:{game_id}:away_team")
@@ -1534,16 +1712,27 @@ async def get_winprob_friendly(game_id: str):
         away_logo = await r.get(f"game:{game_id}:away_logo")
         home_abbrev = await r.get(f"game:{game_id}:home_abbrev")
         away_abbrev = await r.get(f"game:{game_id}:away_abbrev")
-        
-        if not home_team or not away_team or not home_logo or not away_logo or not home_abbrev or not away_abbrev:
+
+        if (
+            not home_team
+            or not away_team
+            or not home_logo
+            or not away_logo
+            or not home_abbrev
+            or not away_abbrev
+        ):
             # Cache miss - fetch from NHL API
             try:
                 game_data = await fetch_nhl_play_by_play(game_id)
                 if game_data:
                     away_team_data = game_data.get("awayTeam", {})
                     home_team_data = game_data.get("homeTeam", {})
-                    away_team = away_team_data.get("commonName", {}).get("default", "Away Team")
-                    home_team = home_team_data.get("commonName", {}).get("default", "Home Team")
+                    away_team = away_team_data.get("commonName", {}).get(
+                        "default", "Away Team"
+                    )
+                    home_team = home_team_data.get("commonName", {}).get(
+                        "default", "Home Team"
+                    )
                     away_logo = away_team_data.get("logo", "")
                     home_logo = home_team_data.get("logo", "")
                     away_abbrev = away_team_data.get("abbrev", "")
@@ -1592,7 +1781,7 @@ async def get_winprob_friendly(game_id: str):
                     await r.setex(f"game:{game_id}:home_abbrev", 86400, home_abbrev)
                 if away_abbrev:
                     await r.setex(f"game:{game_id}:away_abbrev", 86400, away_abbrev)
-        
+
         # Format strength with empty net and shorthanded indicators
         strength_names = {
             "EV": "Even Strength (5v5)",
@@ -1601,15 +1790,19 @@ async def get_winprob_friendly(game_id: str):
             "EN": "Empty Net",
             "ENPP": "Empty Net + Power Play",
             "ENPK": "Empty Net + Shorthanded",
-            "SH": "Shorthanded"
+            "SH": "Shorthanded",
         }
-        
+
         # Build situation description
         situation_parts = [strength_names.get(strength, strength)]
         if empty_net and strength not in ["EN", "ENPP", "ENPK"]:
             situation_parts.append("Empty Net")
-        situation_description = " + ".join(situation_parts) if len(situation_parts) > 1 else situation_parts[0]
-        
+        situation_description = (
+            " + ".join(situation_parts)
+            if len(situation_parts) > 1
+            else situation_parts[0]
+        )
+
         # Determine favorite
         if p_home > 0.55:
             favorite = f"{home_team} (favored)"
@@ -1617,12 +1810,12 @@ async def get_winprob_friendly(game_id: str):
             favorite = f"{away_team} (favored)"
         else:
             favorite = "Close game"
-        
+
         # Get spread (mock for now - can be replaced with real betting API)
         spread_value = None
         spread_favorite = None
         over_under = None
-        
+
         return {
             "game": {
                 "id": game_id,
@@ -1634,37 +1827,40 @@ async def get_winprob_friendly(game_id: str):
                 "is_live": game_state in ["LIVE", "CRIT"],
                 "spread": spread_value,
                 "spread_favorite": spread_favorite,
-                "over_under": over_under
+                "over_under": over_under,
             },
             "score": {
                 "home": {
                     "team": home_team,
                     "abbrev": home_abbrev,
                     "goals": home_score,
-                    "logo": home_logo or ""
+                    "logo": home_logo or "",
                 },
                 "away": {
                     "team": away_team,
                     "abbrev": away_abbrev,
                     "goals": away_score,
-                    "logo": away_logo or ""
+                    "logo": away_logo or "",
                 },
-                "display": f"{home_team} {home_score} - {away_score} {away_team}"
+                "display": f"{home_team} {home_score} - {away_score} {away_team}",
             },
             "current_situation": {
                 "strength": situation_description,
                 "empty_net": empty_net,
                 "last_event": last_event,
-                "last_player": last_player_name
+                "last_player": last_player_name,
             },
             "win_probability": {
                 home_team: round(p_home * 100, 1),
                 away_team: round(p_away * 100, 1),
-                "summary": f"{home_team}: {round(p_home * 100, 1)}% | {away_team}: {round(p_away * 100, 1)}%"
+                "summary": f"{home_team}: {round(p_home * 100, 1)}% | {away_team}: {round(p_away * 100, 1)}%",
             },
-            "confidence": "High" if max(p_home, p_away) > 0.7 else "Medium" if max(p_home, p_away) > 0.6 else "Low",
-            "updated_at": float(data["ts"])
+            "confidence": "High"
+            if max(p_home, p_away) > 0.7
+            else "Medium"
+            if max(p_home, p_away) > 0.6
+            else "Low",
+            "updated_at": float(data["ts"]),
         }
     except Exception:
         raise HTTPException(status_code=404, detail="No prediction yet for this game")
-

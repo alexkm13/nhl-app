@@ -2,6 +2,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel
 
+
 class GameState(BaseModel):
     game_id: str
     ts: float

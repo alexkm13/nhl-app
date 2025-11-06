@@ -1,4 +1,5 @@
 """Tests for Pydantic models."""
+
 import pytest
 
 from models import WinProb
@@ -10,7 +11,7 @@ def test_winprob_model_valid():
         game_id="2024020589",
         p_home_win=0.75,
         model_id="lightgbm_20251104_121934_d9b5b03f",
-        ts=1705358400.0
+        ts=1705358400.0,
     )
     assert winprob.game_id == "2024020589"
     assert winprob.p_home_win == 0.75
@@ -25,7 +26,7 @@ def test_winprob_model_invalid():
             game_id="2024020589",
             p_home_win="invalid",  # Should be float
             model_id="lightgbm_20251104_121934_d9b5b03f",
-            ts=1705358400.0
+            ts=1705358400.0,
         )
 
 
@@ -34,7 +35,7 @@ def test_winprob_model_missing_fields():
     with pytest.raises(Exception):  # Pydantic validation error
         WinProb(
             game_id="2024020589",
-            p_home_win=0.75
+            p_home_win=0.75,
             # Missing model_id and ts
         )
 
@@ -46,7 +47,7 @@ def test_winprob_model_p_home_win_range():
         game_id="2024020589",
         p_home_win=1.5,  # Outside 0-1 range
         model_id="lightgbm_20251104_121934_d9b5b03f",
-        ts=1705358400.0
+        ts=1705358400.0,
     )
     assert winprob.p_home_win == 1.5
 
@@ -57,7 +58,7 @@ def test_winprob_model_negative_ts():
         game_id="2024020589",
         p_home_win=0.75,
         model_id="lightgbm_20251104_121934_d9b5b03f",
-        ts=-1000.0
+        ts=-1000.0,
     )
     assert winprob.ts == -1000.0
 
@@ -68,11 +69,10 @@ def test_winprob_model_json_serialization():
         game_id="2024020589",
         p_home_win=0.75,
         model_id="lightgbm_20251104_121934_d9b5b03f",
-        ts=1705358400.0
+        ts=1705358400.0,
     )
     json_data = winprob.model_dump()
     assert json_data["game_id"] == "2024020589"
     assert json_data["p_home_win"] == 0.75
     assert json_data["model_id"] == "lightgbm_20251104_121934_d9b5b03f"
     assert json_data["ts"] == 1705358400.0
-

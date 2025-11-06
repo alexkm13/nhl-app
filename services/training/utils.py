@@ -1,6 +1,7 @@
 """
 Utility functions for training pipeline.
 """
+
 import os
 import yaml
 import json
@@ -14,38 +15,38 @@ def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None):
     """Setup logging configuration."""
     logging.basicConfig(
         level=getattr(logging, log_level.upper()),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
             logging.StreamHandler(),
-            *([logging.FileHandler(log_file)] if log_file else [])
-        ]
+            *([logging.FileHandler(log_file)] if log_file else []),
+        ],
     )
     return logging.getLogger(__name__)
 
 
 def load_config(config_path: str) -> Dict:
     """Load configuration from YAML file."""
-    with open(config_path, 'r') as f:
+    with open(config_path, "r") as f:
         config = yaml.safe_load(f)
     return config
 
 
 def save_config(config: Dict, output_path: str):
     """Save configuration to YAML file."""
-    with open(output_path, 'w') as f:
+    with open(output_path, "w") as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
 
 def merge_configs(base_config: Dict, override_config: Dict) -> Dict:
     """Merge two configuration dictionaries."""
     merged = base_config.copy()
-    
+
     for key, value in override_config.items():
         if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
             merged[key] = merge_configs(merged[key], value)
         else:
             merged[key] = value
-    
+
     return merged
 
 
@@ -58,21 +59,18 @@ def create_experiment_dir(base_dir: str = "experiments") -> str:
 
 
 def save_experiment_results(
-    experiment_dir: str,
-    metrics: Dict,
-    config: Dict,
-    feature_importance: pd.DataFrame
+    experiment_dir: str, metrics: Dict, config: Dict, feature_importance: pd.DataFrame
 ):
     """Save experiment results to directory."""
     # Save metrics
     metrics_file = os.path.join(experiment_dir, "metrics.json")
-    with open(metrics_file, 'w') as f:
+    with open(metrics_file, "w") as f:
         json.dump(metrics, f, indent=2)
-    
+
     # Save config
     config_file = os.path.join(experiment_dir, "config.yaml")
     save_config(config, config_file)
-    
+
     # Save feature importance
     importance_file = os.path.join(experiment_dir, "feature_importance.csv")
     feature_importance.to_csv(importance_file, index=False)
@@ -92,16 +90,15 @@ def print_metrics(metrics: Dict, title: str = "Metrics"):
 
 def validate_config(config: Dict) -> bool:
     """Validate configuration."""
-    required_keys = ['training']
+    required_keys = ["training"]
     for key in required_keys:
         if key not in config:
             raise ValueError(f"Missing required config key: {key}")
-    
-    training = config['training']
-    required_training_keys = ['model_type', 'hyperparameters']
+
+    training = config["training"]
+    required_training_keys = ["model_type", "hyperparameters"]
     for key in required_training_keys:
         if key not in training:
             raise ValueError(f"Missing required training config key: {key}")
-    
-    return True
 
+    return True
