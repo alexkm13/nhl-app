@@ -1579,7 +1579,7 @@ async def get_winprob_history(game_id: str):
                         current_game_time = period_offset + period_elapsed
                     except (ValueError, TypeError):
                         current_game_time = (period - 1) * 1200
-        except:
+        except Exception:
             pass
         from fastapi.responses import JSONResponse
         return JSONResponse(content={"game_id": game_id, "data": [], "current_game_time": current_game_time})
