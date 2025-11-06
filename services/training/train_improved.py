@@ -13,7 +13,6 @@ from data import load_training_data
 from features import engineer_features
 from model import WinProbabilityModel
 from evaluate import evaluate_model
-from registry import ModelRegistry
 from utils import setup_logging, load_config
 
 

@@ -5,6 +5,7 @@ Run A/B test and generate predictions for analysis.
 import os
 import sys
 import asyncio
+from typing import Optional
 import psycopg
 
 # Add parent directory to path

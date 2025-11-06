@@ -303,7 +303,7 @@ def print_analysis_report(analysis: Dict, recommendations: List[str]):
         return
     
     overall = analysis.get('overall', {})
-    print(f"\nOverall Metrics:")
+    print("\nOverall Metrics:")
     print(f"  Total Predictions: {overall.get('total_predictions', 0):,}")
     print(f"  Mean Absolute Error: {overall.get('mean_abs_error', 0):.4f}")
     print(f"  Mean Brier Score: {overall.get('mean_brier_score', 0):.4f}")

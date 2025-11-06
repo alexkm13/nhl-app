@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Test script to verify events flow through the pipeline to the model."""
 import asyncio
+import json
 import sys
 from redis.asyncio import Redis
 
