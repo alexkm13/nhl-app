@@ -1,10 +1,10 @@
 # Training Configuration
 training:
-  # Data configuration - Oct 2020 to Oct 2025
-  train_start_date: "2020-10-01"
-  train_end_date: "2024-09-30"  # Training data through Sep 2024
-  test_start_date: "2024-10-01"  # Test data from Oct 2024 onwards
-  test_end_date: "2025-10-01"  # Through Oct 2025
+  # Data configuration - 2024-25 NHL season
+  train_start_date: "2024-10-01"
+  train_end_date: "2025-03-31"  # Regular season through March
+  test_start_date: "2025-04-01"
+  test_end_date: "2025-10-01"  # Playoffs and start of next season
   
   # Feature engineering
   features:

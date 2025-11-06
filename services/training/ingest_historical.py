@@ -207,7 +207,7 @@ async def ingest_date_range(start_date: str, end_date: str):
         # Rate limiting
         await asyncio.sleep(0.5)
     
-    print("\n\nIngestion complete:")
+    print(f"\n\nIngestion complete:")
     print(f"  Total games: {total_games}")
     print(f"  Successful: {successful}")
     print(f"  Failed: {total_games - successful}")

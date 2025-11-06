@@ -13,13 +13,11 @@ import catboost as cb
 class WinProbabilityModel:
     """Base class for win probability models."""
     
-    def __init__(self, model_type: str = "xgboost", use_calibration: bool = True, **kwargs):
+    def __init__(self, model_type: str = "xgboost", **kwargs):
         self.model_type = model_type
         self.model = None
-        self.calibrator = None
         self.feature_columns = None
         self.config = kwargs
-        self.use_calibration = use_calibration
     
     def train(
         self,
@@ -74,10 +72,6 @@ class WinProbabilityModel:
             )
         else:
             self.model.fit(X_train, y_train)
-        
-        # Apply calibration if enabled
-        if self.use_calibration and X_val is not None and y_val is not None:
-            self._calibrate_model(X_val, y_val)
     
     def _train_lightgbm(
         self,
@@ -123,10 +117,6 @@ class WinProbabilityModel:
                 train_data,
                 num_boost_round=self.config.get('n_estimators', 200)
             )
-        
-        # Apply calibration if enabled
-        if self.use_calibration and X_val is not None and y_val is not None:
-            self._calibrate_model(X_val, y_val)
     
     def _train_catboost(
         self,
@@ -161,69 +151,23 @@ class WinProbabilityModel:
             )
         else:
             self.model.fit(X_train, y_train, verbose=False)
-        
-        # Apply calibration if enabled
-        if self.use_calibration and X_val is not None and y_val is not None:
-            self._calibrate_model(X_val, y_val)
     
-    def _calibrate_model(self, X_val: pd.DataFrame, y_val: pd.Series):
-        """Calibrate model probabilities using Platt scaling."""
-        if self.model is None:
-            raise ValueError("Model not trained. Call train() first.")
-        
-        # Get raw predictions for validation set
-        X_val_aligned = X_val[self.feature_columns]
-        if self.model_type == "xgboost":
-            raw_probs = self.model.predict_proba(X_val_aligned)[:, 1]
-        elif self.model_type == "lightgbm":
-            raw_probs = self.model.predict(X_val_aligned)
-        elif self.model_type == "catboost":
-            raw_probs = self.model.predict_proba(X_val_aligned)[:, 1]
-        else:
-            raise ValueError(f"Unknown model type: {self.model_type}")
-        
-        # Use Platt scaling (sigmoid calibration)
-        # Fit a sigmoid to map raw probabilities to calibrated probabilities
-        from sklearn.linear_model import LogisticRegression
-        
-        # Reshape for sklearn
-        raw_probs_2d = raw_probs.reshape(-1, 1)
-        
-        # Fit logistic regression for calibration (Platt scaling)
-        self.calibrator = LogisticRegression()
-        self.calibrator.fit(raw_probs_2d, y_val)
-    
-    def predict(self, X: pd.DataFrame, clip_probabilities: bool = True) -> np.ndarray:
-        """Predict win probability with optional calibration and clipping."""
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        """Predict win probability."""
         if self.model is None:
             raise ValueError("Model not trained. Call train() first.")
         
         # Ensure same feature order
         X = X[self.feature_columns]
         
-        # Get raw predictions
         if self.model_type == "xgboost":
-            raw_probs = self.model.predict_proba(X)[:, 1]
+            return self.model.predict_proba(X)[:, 1]
         elif self.model_type == "lightgbm":
-            raw_probs = self.model.predict(X)
+            return self.model.predict(X)
         elif self.model_type == "catboost":
-            raw_probs = self.model.predict_proba(X)[:, 1]
+            return self.model.predict_proba(X)[:, 1]
         else:
             raise ValueError(f"Unknown model type: {self.model_type}")
-        
-        # Apply calibration if available
-        if self.calibrator is not None:
-            raw_probs_2d = raw_probs.reshape(-1, 1)
-            calibrated_probs = self.calibrator.predict_proba(raw_probs_2d)[:, 1]
-            probs = calibrated_probs
-        else:
-            probs = raw_probs
-        
-        # Clip probabilities to prevent extreme confidence (0.05 to 0.95)
-        if clip_probabilities:
-            probs = np.clip(probs, 0.05, 0.95)
-        
-        return probs
     
     def get_feature_importance(self) -> pd.DataFrame:
         """Get feature importance."""
@@ -253,9 +197,7 @@ class WinProbabilityModel:
             'model': self.model,
             'model_type': self.model_type,
             'feature_columns': self.feature_columns,
-            'config': self.config,
-            'calibrator': self.calibrator,
-            'use_calibration': self.use_calibration
+            'config': self.config
         }
         
         with open(filepath, 'wb') as f:
@@ -269,12 +211,10 @@ class WinProbabilityModel:
         
         instance = cls(
             model_type=model_data['model_type'],
-            use_calibration=model_data.get('use_calibration', True),
             **model_data['config']
         )
         instance.model = model_data['model']
         instance.feature_columns = model_data['feature_columns']
-        instance.calibrator = model_data.get('calibrator', None)
         
         return instance
 

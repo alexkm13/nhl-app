@@ -10,6 +10,8 @@ from datetime import datetime
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from data import load_training_data
+from features import engineer_features
 from model import WinProbabilityModel
 from evaluate import evaluate_model
 from registry import ModelRegistry
@@ -226,7 +228,7 @@ async def train_improved_model(config_path: str, save_model: bool = True):
         
         print(f"\nModel registered with ID: {model_id}")
         print(f"To use this model, set MODEL_ID={model_id}")
-        print("To run A/B test, set AB_TEST_ENABLED=true and configure variants")
+        print(f"To run A/B test, set AB_TEST_ENABLED=true and configure variants")
     
     return model, evaluation_results
 

@@ -17,22 +17,7 @@ lint:
 	docker compose exec gateway bash -lc "ruff check . || true"
 
 test:
-	pytest tests/ -v --tb=short
-
-test-unit:
-	pytest tests/ -v -m unit --tb=short
-
-test-integration:
-	pytest tests/ -v -m integration --tb=short
-
-test-api:
-	pytest tests/ -v -m api --tb=short
-
-test-cov:
-	pytest tests/ --cov=services --cov-report=term-missing --cov-report=html
-
-test-watch:
-	pytest-watch tests/ -v
+	echo "Add tests under each service and wire up pytest."
 
 clean:
 	rm -rf __pycache__ .pytest_cache

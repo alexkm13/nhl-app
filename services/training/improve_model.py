@@ -5,7 +5,8 @@ Improve model based on A/B test results and prediction analysis.
 import os
 import sys
 import json
-from typing import Dict, List
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
 import psycopg
@@ -24,7 +25,7 @@ def get_prediction_errors(db_url: str, days: int = 7) -> pd.DataFrame:
     """
     try:
         with psycopg.connect(db_url) as conn:
-            with conn.cursor():
+            with conn.cursor() as cur:
                 # Get predictions and actual game outcomes
                 # First, get game start times to calculate seconds elapsed
                 query = """
@@ -304,14 +305,14 @@ def print_analysis_report(analysis: Dict, recommendations: List[str]):
         return
     
     overall = analysis.get('overall', {})
-    print("\nOverall Metrics:")
+    print(f"\nOverall Metrics:")
     print(f"  Total Predictions: {overall.get('total_predictions', 0):,}")
     print(f"  Mean Absolute Error: {overall.get('mean_abs_error', 0):.4f}")
     print(f"  Mean Brier Score: {overall.get('mean_brier_score', 0):.4f}")
     print(f"  Mean Log Loss: {overall.get('mean_log_loss', 0):.4f}")
     
     if 'by_score_differential' in analysis:
-        print("\nError by Score Differential:")
+        print(f"\nError by Score Differential:")
         score_diff = analysis['by_score_differential']
         errors = score_diff.get('mean_abs_error', {})
         for key, error in errors.items():
@@ -319,14 +320,14 @@ def print_analysis_report(analysis: Dict, recommendations: List[str]):
                 print(f"  {key}: {error:.4f}")
     
     if 'by_game_time' in analysis:
-        print("\nError by Game Time:")
+        print(f"\nError by Game Time:")
         time_error = analysis['by_game_time'].get('mean_abs_error', {})
         for key, error in time_error.items():
             if error is not None:
                 print(f"  {key}: {error:.4f}")
     
     if 'calibration' in analysis:
-        print("\nCalibration Analysis:")
+        print(f"\nCalibration Analysis:")
         cal = analysis['calibration']
         predicted_probs = cal.get('predicted_probs', [])
         actual_rates = cal.get('actual_rates', [])
@@ -334,7 +335,7 @@ def print_analysis_report(analysis: Dict, recommendations: List[str]):
             if pred is not None and actual is not None:
                 print(f"  Bin {i+1}: Predicted {pred:.3f}, Actual {actual:.3f}, Diff {abs(pred-actual):.3f}")
     
-    print("\n" + "="*80)
+    print(f"\n" + "="*80)
     print("Improvement Recommendations:")
     print("="*80)
     for i, rec in enumerate(recommendations, 1):

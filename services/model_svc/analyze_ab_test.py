@@ -72,7 +72,7 @@ def main():
     analyzer = ABTestAnalyzer(args.db_url)
     
     # Get report
-    print("\nAnalyzing A/B test results...")
+    print(f"\nAnalyzing A/B test results...")
     print(f"Period: {start_time.isoformat()} to {end_time.isoformat()}")
     if args.game_id:
         print(f"Game ID: {args.game_id}")

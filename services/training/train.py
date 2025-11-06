@@ -6,7 +6,6 @@ import os
 import sys
 import asyncio
 import argparse
-import pandas as pd
 from sklearn.model_selection import train_test_split
 
 # Add parent directory to path for imports
@@ -117,22 +116,8 @@ async def main():
     
     # Engineer features
     logger.info("Engineering features...")
-    
-    # Combine both datasets to ensure consistent feature columns
-    # This ensures one-hot encoding creates the same columns for both sets
-    combined_df = pd.concat([train_df, test_df], ignore_index=True)
-    combined_features_df, feature_columns = engineer_features(combined_df, config)
-    
-    # Split back into train and test
-    train_features_df = combined_features_df.iloc[:len(train_df)].copy()
-    test_features_df = combined_features_df.iloc[len(train_df):].copy()
-    
-    # Ensure all feature columns exist in both sets (fill missing with 0)
-    for col in feature_columns:
-        if col not in train_features_df.columns:
-            train_features_df[col] = 0
-        if col not in test_features_df.columns:
-            test_features_df[col] = 0
+    train_features_df, feature_columns = engineer_features(train_df, config)
+    test_features_df, _ = engineer_features(test_df, config)
     
     # Prepare features and labels
     X_train = train_features_df[feature_columns]

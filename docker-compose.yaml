@@ -31,7 +31,7 @@ services:
     build: ./services/model_svc
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - MODEL_ID=lightgbm_20251104_215914_53104e84
+      - MODEL_ID=lightgbm_20251104_121934_d9b5b03f
       - DATABASE_URL=postgresql://postgres:postgres@timescaledb:5432/gamecast
       # A/B testing configuration (disabled by default)
       # - AB_TEST_ENABLED=true
@@ -58,6 +58,22 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+
+  gateway-test:
+    build:
+      context: ./services/gateway
+      dockerfile: Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://postgres:postgres@timescaledb:5432/gamecast
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    command: ["pytest", "tests/", "-v"]
+    profiles:
+      - test
 
   timescaledb:
     image: timescale/timescaledb:latest-pg16

@@ -2,6 +2,7 @@
 Model loading utilities for production model service.
 """
 import os
+import pickle
 from typing import Optional
 from model import BaselineModel
 
