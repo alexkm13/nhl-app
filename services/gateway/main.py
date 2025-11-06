@@ -3244,26 +3244,29 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                                 strength = "PK"
                             else:
                                 strength = "EV"
-                    elif home_skaters == 5 and away_skaters == 5:
-                        strength = "EV"
-                    elif home_skaters > away_skaters:
-                        # Home has more skaters = power play for home
-                        # This is a power play situation (e.g., 5v4, 5v3, 4v3)
-                        # But check: if home > away and both are reasonable (3-5), it's a power play
-                        if home_skaters >= 3 and away_skaters >= 3:  # Valid power play range (3v3 to 5v4)
-                            strength = "PP"
-                        else:
-                            # Invalid situation (e.g., 5v1, 5v2) - assume even strength
+                        elif home_skaters == 5 and away_skaters == 5:
                             strength = "EV"
-                    elif home_skaters < away_skaters:
-                        # Home has fewer skaters = penalty kill for home
-                        # Only if home_skaters < 5 (actually shorthanded, not just 5v6 empty net)
-                        if home_skaters < 5 and away_skaters <= 5 and home_skaters >= 3:  # Valid penalty kill range (3v5 to 4v5)
-                            strength = "PK"
+                        elif home_skaters > away_skaters:
+                            # Home has more skaters = power play for home
+                            # This is a power play situation (e.g., 5v4, 5v3, 4v3)
+                            # But check: if home > away and both are reasonable (3-5), it's a power play
+                            if home_skaters >= 3 and away_skaters >= 3:  # Valid power play range (3v3 to 5v4)
+                                strength = "PP"
+                            else:
+                                # Invalid situation (e.g., 5v1, 5v2) - assume even strength
+                                strength = "EV"
+                        elif home_skaters < away_skaters:
+                            # Home has fewer skaters = penalty kill for home
+                            # Only if home_skaters < 5 (actually shorthanded, not just 5v6 empty net)
+                            if home_skaters < 5 and away_skaters <= 5 and home_skaters >= 3:  # Valid penalty kill range (3v5 to 4v5)
+                                strength = "PK"
+                            else:
+                                # Invalid situation (e.g., 1v5, 2v5) - assume even strength
+                                strength = "EV"
                         else:
-                            # Invalid situation (e.g., 1v5, 2v5) - assume even strength
+                            # home_skaters == away_skaters but not 5v5 (shouldn't happen in non-empty-net)
                             strength = "EV"
-                    else:  # AWAY team scored
+                    elif team == "AWAY":
                         if empty_net:
                             if away_skaters == 6:
                                 # Away has empty net (6 skaters, goalie pulled)
@@ -3301,6 +3304,9 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                         else:
                             # away_skaters == home_skaters but not 5v5 (shouldn't happen in non-empty-net)
                             strength = "EV"
+                    else:
+                        # Unknown team - default to even strength
+                        strength = "EV"
                 else:
                     # If we have strength from API, convert it to our internal format
                     empty_net = (away_skaters == 6 or home_skaters == 6)
