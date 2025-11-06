@@ -1,5 +1,4 @@
 """Utility functions for game ingestion and processing."""
-import asyncio
 import json
 import math
 from datetime import datetime

@@ -1,7 +1,6 @@
 """
 Feature engineering for production inference - matches training pipeline.
 """
-import numpy as np
 
 
 def engineer_features(features: dict) -> dict:
@@ -60,8 +59,6 @@ def engineer_features(features: dict) -> dict:
     last_event_PENALTY = 1 if last_event == 'PENALTY' else 0
     last_event_SHOT = 1 if last_event == 'SHOT' else 0
     last_event_FACEOFF = 1 if last_event == 'FACEOFF' else 0
-    last_event_HIT = 1 if last_event == 'HIT' else 0
-    last_event_BLOCK = 1 if last_event == 'BLOCK' else 0
     
     recent_goal = last_event_GOAL
     recent_penalty = last_event_PENALTY

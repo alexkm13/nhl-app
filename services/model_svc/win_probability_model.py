@@ -3,7 +3,6 @@ WinProbabilityModel class for production inference.
 This is a simplified version that loads trained models.
 """
 import pickle
-from typing import Optional
 import pandas as pd
 
 # Try to import ML libraries (lazy import to avoid errors if not available)
@@ -32,13 +31,13 @@ class WinProbabilityModel:
         X = X[self.feature_columns]
         
         if self.model_type == "xgboost":
-            import xgboost as xgb
+            import xgboost as xgb  # noqa: F401
             return pd.Series(self.model.predict_proba(X)[:, 1])
         elif self.model_type == "lightgbm":
-            import lightgbm as lgb
+            import lightgbm as lgb  # noqa: F401
             return pd.Series(self.model.predict(X))
         elif self.model_type == "catboost":
-            import catboost as cb
+            import catboost as cb  # noqa: F401
             return pd.Series(self.model.predict_proba(X)[:, 1])
         else:
             raise ValueError(f"Unknown model type: {self.model_type}")

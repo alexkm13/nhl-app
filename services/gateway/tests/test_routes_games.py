@@ -105,8 +105,7 @@ async def test_start_game_ingestion_success(client, sample_game_data, mock_redis
     """Test successful game ingestion start."""
     game_id = "2024020589"
     
-    with patch('routes.games.fetch_nhl_play_by_play') as mock_fetch, \
-         patch('routes.games.run_ingestion') as mock_ingestion:
+    with patch('routes.games.fetch_nhl_play_by_play') as mock_fetch:
         mock_fetch.return_value = sample_game_data
         mock_redis.hget.return_value = None  # Not in progress
         

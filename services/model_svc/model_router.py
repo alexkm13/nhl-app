@@ -2,7 +2,6 @@
 Model Router for A/B Testing - routes predictions to different model variants.
 """
 import os
-import time
 from typing import Dict, Optional, Tuple
 from model_loader import ModelLoader, load_production_model
 from ab_test import ABTestManager, ABTestMetrics

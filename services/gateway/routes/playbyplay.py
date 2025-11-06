@@ -473,6 +473,19 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 else:
                     away_score += 1
             
+            # Determine final player name
+            final_player_name = player_name
+            if not final_player_name:
+                if player_id:
+                    final_player_name = await get_player_name(player_id, r)
+                    if not final_player_name:
+                        final_player_name = f"Player {player_id}"
+                else:
+                    if mapped_type == "GOAL":
+                        final_player_name = "Unknown Player"
+                    elif mapped_type not in ["PENALTY", "PERIOD_END", "PERIOD_START"]:
+                        final_player_name = None
+            
             # Skip events that require a player but don't have one (except period events)
             if mapped_type in ["HIT", "SHOT", "BLOCK", "FACEOFF", "GIVEAWAY", "TAKEAWAY"]:
                 if not final_player_name or not player_id:
@@ -483,19 +496,6 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 event_desc = mapped_type
             if event_desc == mapped_type and mapped_type not in ["PERIOD_END", "PERIOD_START"]:
                 event_desc = mapped_type.title()
-            
-            # Add event
-            final_player_name = player_name
-            if not final_player_name:
-                if player_id:
-                    final_player_name = await get_player_name(player_id, r)
-                    if not final_player_name:
-                        final_player_name = f"Player {player_id}"
-                else:
-                    if mapped_type == "GOAL":
-                        final_player_name = "Unknown Player" if not final_player_name else final_player_name
-                    elif mapped_type not in ["PENALTY", "PERIOD_END", "PERIOD_START"]:
-                        final_player_name = None
             
             event_data = {
                 "id": f"{game_id}-{play.get('eventId', len(events))}",

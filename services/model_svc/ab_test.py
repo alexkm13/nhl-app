@@ -5,9 +5,9 @@ import json
 import os
 import hashlib
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
+from datetime import datetime
 
 
 @dataclass
@@ -325,14 +325,14 @@ class ABTestMetrics:
         latencies = self.redis.lrange(latency_key, 0, -1)
         avg_latency = 0.0
         if latencies:
-            avg_latency = sum(float(l) for l in latencies) / len(latencies)
+            avg_latency = sum(float(lat) for lat in latencies) / len(latencies)
         
         return {
             'predictions': predictions_count,
             'avg_latency_ms': round(avg_latency, 2),
-            'p50_latency_ms': self._percentile([float(l) for l in latencies], 50) if latencies else 0,
-            'p95_latency_ms': self._percentile([float(l) for l in latencies], 95) if latencies else 0,
-            'p99_latency_ms': self._percentile([float(l) for l in latencies], 99) if latencies else 0,
+            'p50_latency_ms': self._percentile([float(lat) for lat in latencies], 50) if latencies else 0,
+            'p95_latency_ms': self._percentile([float(lat) for lat in latencies], 95) if latencies else 0,
+            'p99_latency_ms': self._percentile([float(lat) for lat in latencies], 99) if latencies else 0,
         }
     
     def _percentile(self, data: List[float], percentile: int) -> float:

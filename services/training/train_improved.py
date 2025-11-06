@@ -4,9 +4,7 @@ Train improved model based on analysis recommendations.
 """
 import os
 import sys
-import yaml
 import argparse
-from datetime import datetime
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -131,13 +129,17 @@ def train_improved_model(
         from registry import ModelRegistry
         registry = ModelRegistry()
         
+        # Generate model_id first
+        model_id = registry._generate_model_id(model_type, training_config)
+        model_filepath = f"models/{model_id}/model.pkl"
+        
         model_id = registry.register_model(
             model=model,
             model_type=model_type,
             config=training_config,
             metrics=evaluation_results,
             feature_importance=model.get_feature_importance(),
-            model_filepath=f"models/{model_id}/model.pkl"
+            model_filepath=model_filepath
         )
         
         print(f"\nModel registered with ID: {model_id}")

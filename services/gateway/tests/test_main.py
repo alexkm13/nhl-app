@@ -1,5 +1,4 @@
 """Tests for main app routes."""
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Test script to verify events flow through the pipeline to the model."""
 import asyncio
-import json
-import time
 import sys
 from redis.asyncio import Redis
 
@@ -72,7 +70,7 @@ async def test_model_events_flow(game_id: str):
                 return
         
         # Step 3: Wait for ingestion to process
-        print(f"\nStep 3: Waiting for ingestion to process events...")
+        print("\nStep 3: Waiting for ingestion to process events...")
         max_wait = 30  # seconds
         wait_time = 0
         ingestion_complete = False
@@ -96,7 +94,7 @@ async def test_model_events_flow(game_id: str):
             print(f"  ⚠ Ingestion did not complete within {max_wait} seconds")
         
         # Step 4: Check events stream
-        print(f"\nStep 4: Checking events stream...")
+        print("\nStep 4: Checking events stream...")
         events_after = await check_stream_length(redis, "events")
         events_added = events_after - events_before
         print(f"  Events stream length: {events_after} (added {events_added} events)")
@@ -105,10 +103,10 @@ async def test_model_events_flow(game_id: str):
             print("  ✗ No events were added to the stream!")
             return
         else:
-            print(f"  ✓ Events were added to the stream")
+            print("  ✓ Events were added to the stream")
         
         # Step 5: Wait for feature_state to process events
-        print(f"\nStep 5: Waiting for feature_state to process events...")
+        print("\nStep 5: Waiting for feature_state to process events...")
         max_wait = 20
         wait_time = 0
         
@@ -118,7 +116,7 @@ async def test_model_events_flow(game_id: str):
             print(f"  Features stream length: {features_after} (added {features_added} features, waited {wait_time}s)")
             
             if features_added > 0:
-                print(f"  ✓ Features were generated from events")
+                print("  ✓ Features were generated from events")
                 break
             
             await asyncio.sleep(2)
@@ -130,10 +128,10 @@ async def test_model_events_flow(game_id: str):
             return
         
         # Step 6: Check game state
-        print(f"\nStep 6: Checking game state...")
+        print("\nStep 6: Checking game state...")
         state_after = await check_redis_hash(redis, f"state:{game_id}")
         if state_after:
-            print(f"  ✓ Game state exists:")
+            print("  ✓ Game state exists:")
             print(f"    Home score: {state_after.get('home_score', 'N/A')}")
             print(f"    Away score: {state_after.get('away_score', 'N/A')}")
             print(f"    Strength: {state_after.get('strength', 'N/A')}")
@@ -142,7 +140,7 @@ async def test_model_events_flow(game_id: str):
             print("  ✗ Game state not found")
         
         # Step 7: Wait for model_svc to process features
-        print(f"\nStep 7: Waiting for model_svc to generate predictions...")
+        print("\nStep 7: Waiting for model_svc to generate predictions...")
         max_wait = 20
         wait_time = 0
         
@@ -154,7 +152,7 @@ async def test_model_events_flow(game_id: str):
             print(f"  Predictions stream length: {predictions_after} (added {predictions_added} predictions, waited {wait_time}s)")
             
             if pred_after:
-                print(f"  ✓ Prediction exists in cache:")
+                print("  ✓ Prediction exists in cache:")
                 print(f"    Game ID: {pred_after.get('game_id', 'N/A')}")
                 print(f"    Home win probability: {pred_after.get('p_home_win', 'N/A')}")
                 print(f"    Model ID: {pred_after.get('model_id', 'N/A')}")
@@ -170,12 +168,12 @@ async def test_model_events_flow(game_id: str):
             return
         
         # Step 8: Verify via API endpoint
-        print(f"\nStep 8: Verifying via API endpoint...")
+        print("\nStep 8: Verifying via API endpoint...")
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(f"http://localhost:8000/v1/games/{game_id}/winprob")
             if response.status_code == 200:
                 data = response.json()
-                print(f"  ✓ API endpoint returned prediction:")
+                print("  ✓ API endpoint returned prediction:")
                 print(f"    Game ID: {data.get('game_id')}")
                 print(f"    Home win probability: {data.get('p_home_win')}")
                 print(f"    Model ID: {data.get('model_id')}")

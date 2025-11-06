@@ -2,10 +2,8 @@
 """Test script for win probability history array and graph data."""
 import asyncio
 import httpx
-import json
 import os
 import sys
-from datetime import datetime
 
 API_BASE = os.environ.get("API_BASE", "http://localhost:8000")
 
@@ -28,7 +26,7 @@ async def test_history(game_id: str):
             data = response.json()
             history_data = data.get('data', [])
             
-            print(f"   ✓ Response received")
+            print("   ✓ Response received")
             print(f"   Game ID: {data.get('game_id', 'N/A')}")
             print(f"   Data points: {len(history_data)}")
             
@@ -41,7 +39,7 @@ async def test_history(game_id: str):
                 return
             
             # Analyze data
-            print(f"\n2. Data Analysis:")
+            print("\n2. Data Analysis:")
             times = [p['ts'] for p in history_data]
             probs = [p['p_home_win'] for p in history_data]
             
@@ -51,21 +49,21 @@ async def test_history(game_id: str):
             print(f"   Average probability: {sum(probs)/len(probs):.3f}")
             
             # Show first few points
-            print(f"\n3. First 5 data points:")
+            print("\n3. First 5 data points:")
             for i, point in enumerate(history_data[:5], 1):
                 minutes = int(point['ts'] // 60)
                 seconds = int(point['ts'] % 60)
                 print(f"   [{i}] {minutes:02d}:{seconds:02d} - Home Win Prob: {point['p_home_win']:.3f} ({point['p_home_win']*100:.1f}%)")
             
             # Show last few points
-            print(f"\n4. Last 5 data points:")
+            print("\n4. Last 5 data points:")
             for i, point in enumerate(history_data[-5:], len(history_data)-4):
                 minutes = int(point['ts'] // 60)
                 seconds = int(point['ts'] % 60)
                 print(f"   [{i}] {minutes:02d}:{seconds:02d} - Home Win Prob: {point['p_home_win']:.3f} ({point['p_home_win']*100:.1f}%)")
             
             # Check for gaps
-            print(f"\n5. Data Quality Check:")
+            print("\n5. Data Quality Check:")
             gaps = []
             for i in range(len(history_data) - 1):
                 gap = history_data[i+1]['ts'] - history_data[i]['ts']
@@ -77,18 +75,18 @@ async def test_history(game_id: str):
                 for idx, gap in gaps[:5]:
                     print(f"      Gap of {gap:.0f}s between points {idx} and {idx+1}")
             else:
-                print(f"   ✓ No large gaps detected")
+                print("   ✓ No large gaps detected")
             
             # Check if data is suitable for graphing
-            print(f"\n6. Graph Readiness:")
+            print("\n6. Graph Readiness:")
             if len(history_data) >= 10:
                 print(f"   ✓ Sufficient data points ({len(history_data)} >= 10)")
             else:
                 print(f"   ⚠️  Limited data points ({len(history_data)} < 10)")
-                print(f"   Frontend will generate synthetic points from play-by-play")
+                print("   Frontend will generate synthetic points from play-by-play")
             
             # Test current win probability
-            print(f"\n7. Current Win Probability:")
+            print("\n7. Current Win Probability:")
             try:
                 wp_response = await client.get(f"{API_BASE}/v1/games/{game_id}/winprob")
                 if wp_response.status_code == 200:
@@ -101,7 +99,7 @@ async def test_history(game_id: str):
                         if abs(current_prob - last_prob) > 0.01:
                             print(f"   ⚠️  Current prob differs from last history point by {abs(current_prob - last_prob):.3f}")
                         else:
-                            print(f"   ✓ Current prob matches last history point")
+                            print("   ✓ Current prob matches last history point")
                 else:
                     print(f"   ⚠️  Could not fetch current win probability: {wp_response.status_code}")
             except Exception as e:

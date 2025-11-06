@@ -2,7 +2,6 @@
 """Fix prediction timestamps by backfilling with game start time + relative time."""
 import asyncio
 import os
-import sys
 from datetime import datetime
 import httpx
 import psycopg

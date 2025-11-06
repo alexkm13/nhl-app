@@ -9,6 +9,11 @@ from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from redis.asyncio import Redis
 
+from routes.games import router as games_router
+from routes.playbyplay import router as playbyplay_router
+from routes.standings import router as standings_router
+from routes.websocket import router as websocket_router
+
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 app = FastAPI(title="GameCast++ Gateway")
 
@@ -43,18 +48,6 @@ if os.path.exists(static_dir):
             await super().__call__(scope, receive, send_wrapper)
     
     app.mount("/static", NoCacheStaticFiles(directory=static_dir), name="static")
-
-# Import from new modules
-from nhl_api import fetch_nhl_play_by_play, fetch_nhl_boxscore, fetch_team_standings, fetch_nhl_daily_schedule
-from player_utils import get_player_name, get_player_headshot, get_player_names_batch, get_player_headshots_batch
-from event_helpers import (
-    EVENT_TYPE_MAPPING, extract_player_id_from_event, get_player_info,
-    calculate_strength_from_situation, calculate_goal_distance,
-    format_goal_description, format_shot_description, format_penalty_description,
-    get_game_situation, extract_team_info, parse_situation_code
-)
-from models import WinProb
-from utils import calculate_win_probability, run_ingestion, check_overtime_type
 
 # NHL API base URL (kept for backward compatibility)
 NHL_API_BASE = "https://api-web.nhle.com/v1"
@@ -109,12 +102,6 @@ async def metrics_middleware(request, call_next):
     except Exception:
         REQUESTS.labels(path=str(request.url.path), method=request.method, status=getattr(response, "status_code", 0)).inc()
     return response
-
-# Import routers
-from routes.games import router as games_router
-from routes.playbyplay import router as playbyplay_router
-from routes.standings import router as standings_router
-from routes.websocket import router as websocket_router
 
 # Register routers
 app.include_router(games_router)

@@ -5,8 +5,7 @@ Improve model based on A/B test results and prediction analysis.
 import os
 import sys
 import json
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List
 import pandas as pd
 import numpy as np
 import psycopg
@@ -25,79 +24,78 @@ def get_prediction_errors(db_url: str, days: int = 7) -> pd.DataFrame:
     """
     try:
         with psycopg.connect(db_url) as conn:
-            with conn.cursor() as cur:
-                # Get predictions and actual game outcomes
-                # First, get game start times to calculate seconds elapsed
-                query = """
-                    WITH game_starts AS (
-                        SELECT game_id, MIN(ts) as game_start
-                        FROM features
-                        WHERE ts >= NOW() - INTERVAL '%s days'
-                        GROUP BY game_id
-                    )
-                    SELECT 
-                        p.game_id,
-                        p.model_id,
-                        p.ts,
-                        p.p_home_win,
-                        f.home_score,
-                        f.away_score,
-                        f.ts as game_ts,
-                        EXTRACT(EPOCH FROM (f.ts - gs.game_start)) as seconds_elapsed
-                    FROM predictions p
-                    JOIN features f ON p.game_id = f.game_id 
-                        AND p.ts = f.ts
-                    JOIN game_starts gs ON p.game_id = gs.game_id
-                    WHERE p.ts >= NOW() - INTERVAL '%s days'
-                    ORDER BY p.ts DESC
-                """
-                
-                df = pd.read_sql_query(query, conn, params=[days])
-                
-                if df.empty:
-                    return pd.DataFrame()
-                
-                # Calculate actual outcomes (final score)
-                # Get final scores for each game
-                final_scores_query = """
-                    SELECT 
-                        game_id,
-                        MAX(ts) as final_ts,
-                        MAX(home_score) as final_home_score,
-                        MAX(away_score) as final_away_score
+            # Get predictions and actual game outcomes
+            # First, get game start times to calculate seconds elapsed
+            query = """
+                WITH game_starts AS (
+                    SELECT game_id, MIN(ts) as game_start
                     FROM features
                     WHERE ts >= NOW() - INTERVAL '%s days'
                     GROUP BY game_id
-                """
-                
-                final_scores = pd.read_sql_query(final_scores_query, conn, params=[days])
-                
-                # Merge with predictions
-                df = df.merge(
-                    final_scores,
-                    on='game_id',
-                    how='left',
-                    suffixes=('', '_final')
                 )
-                
-                # Calculate actual win probability at prediction time
-                # Actual win = 1 if home wins, 0 if away wins
-                df['actual_home_win'] = (df['final_home_score'] > df['final_away_score']).astype(int)
-                
-                # Calculate prediction error
-                df['prediction_error'] = df['p_home_win'] - df['actual_home_win']
-                df['abs_error'] = df['prediction_error'].abs()
-                
-                # Calculate Brier score (squared error)
-                df['brier_score'] = (df['prediction_error'] ** 2)
-                
-                # Calculate log loss (avoid log(0))
-                df['log_loss'] = -(
-                    df['actual_home_win'] * np.log(df['p_home_win'].clip(0.001, 0.999)) +
-                    (1 - df['actual_home_win']) * np.log((1 - df['p_home_win']).clip(0.001, 0.999))
-                )
-                
-                return df
+                SELECT 
+                    p.game_id,
+                    p.model_id,
+                    p.ts,
+                    p.p_home_win,
+                    f.home_score,
+                    f.away_score,
+                    f.ts as game_ts,
+                    EXTRACT(EPOCH FROM (f.ts - gs.game_start)) as seconds_elapsed
+                FROM predictions p
+                JOIN features f ON p.game_id = f.game_id 
+                    AND p.ts = f.ts
+                JOIN game_starts gs ON p.game_id = gs.game_id
+                WHERE p.ts >= NOW() - INTERVAL '%s days'
+                ORDER BY p.ts DESC
+            """
+            
+            df = pd.read_sql_query(query, conn, params=[days])
+            
+            if df.empty:
+                return pd.DataFrame()
+            
+            # Calculate actual outcomes (final score)
+            # Get final scores for each game
+            final_scores_query = """
+                SELECT 
+                    game_id,
+                    MAX(ts) as final_ts,
+                    MAX(home_score) as final_home_score,
+                    MAX(away_score) as final_away_score
+                FROM features
+                WHERE ts >= NOW() - INTERVAL '%s days'
+                GROUP BY game_id
+            """
+            
+            final_scores = pd.read_sql_query(final_scores_query, conn, params=[days])
+            
+            # Merge with predictions
+            df = df.merge(
+                final_scores,
+                on='game_id',
+                how='left',
+                suffixes=('', '_final')
+            )
+            
+            # Calculate actual win probability at prediction time
+            # Actual win = 1 if home wins, 0 if away wins
+            df['actual_home_win'] = (df['final_home_score'] > df['final_away_score']).astype(int)
+            
+            # Calculate prediction error
+            df['prediction_error'] = df['p_home_win'] - df['actual_home_win']
+            df['abs_error'] = df['prediction_error'].abs()
+            
+            # Calculate Brier score (squared error)
+            df['brier_score'] = (df['prediction_error'] ** 2)
+            
+            # Calculate log loss (avoid log(0))
+            df['log_loss'] = -(
+                df['actual_home_win'] * np.log(df['p_home_win'].clip(0.001, 0.999)) +
+                (1 - df['actual_home_win']) * np.log((1 - df['p_home_win']).clip(0.001, 0.999))
+            )
+            
+            return df
     except Exception as e:
         print(f"Error getting prediction errors: {e}")
         return pd.DataFrame()
@@ -312,7 +310,7 @@ def print_analysis_report(analysis: Dict, recommendations: List[str]):
     print(f"  Mean Log Loss: {overall.get('mean_log_loss', 0):.4f}")
     
     if 'by_score_differential' in analysis:
-        print(f"\nError by Score Differential:")
+        print("\nError by Score Differential:")
         score_diff = analysis['by_score_differential']
         errors = score_diff.get('mean_abs_error', {})
         for key, error in errors.items():
@@ -320,14 +318,14 @@ def print_analysis_report(analysis: Dict, recommendations: List[str]):
                 print(f"  {key}: {error:.4f}")
     
     if 'by_game_time' in analysis:
-        print(f"\nError by Game Time:")
+        print("\nError by Game Time:")
         time_error = analysis['by_game_time'].get('mean_abs_error', {})
         for key, error in time_error.items():
             if error is not None:
                 print(f"  {key}: {error:.4f}")
     
     if 'calibration' in analysis:
-        print(f"\nCalibration Analysis:")
+        print("\nCalibration Analysis:")
         cal = analysis['calibration']
         predicted_probs = cal.get('predicted_probs', [])
         actual_rates = cal.get('actual_rates', [])
@@ -335,7 +333,7 @@ def print_analysis_report(analysis: Dict, recommendations: List[str]):
             if pred is not None and actual is not None:
                 print(f"  Bin {i+1}: Predicted {pred:.3f}, Actual {actual:.3f}, Diff {abs(pred-actual):.3f}")
     
-    print(f"\n" + "="*80)
+    print("\n" + "="*80)
     print("Improvement Recommendations:")
     print("="*80)
     for i, rec in enumerate(recommendations, 1):

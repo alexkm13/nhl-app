@@ -70,7 +70,7 @@ def list_models():
         print(f"  Directory: {info.get('model_dir', 'unknown')}")
         
         if metrics:
-            print(f"  Metrics:")
+            print("  Metrics:")
             print(f"    - Accuracy: {metrics.get('accuracy', 0):.4f}")
             print(f"    - ROC AUC: {metrics.get('roc_auc', 0):.4f}")
             print(f"    - Log Loss: {metrics.get('log_loss', 0):.4f}")
@@ -104,7 +104,7 @@ def activate_model(model_id: str):
     
     # Show model info
     info = registry[model_id]
-    print(f"\nModel Details:")
+    print("\nModel Details:")
     print(f"  Type: {info.get('model_type', 'unknown')}")
     print(f"  Timestamp: {info.get('timestamp', 'unknown')}")
     metrics = info.get('metrics', {})

@@ -1,6 +1,4 @@
 """Shared pytest fixtures for testing."""
-import asyncio
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

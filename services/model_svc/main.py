@@ -2,16 +2,14 @@ import asyncio
 import os
 import json
 import random
-from datetime import datetime
 
 import psycopg
 from prometheus_client import Counter, Histogram, start_http_server
 from redis.asyncio import Redis
 
-from model import BaselineModel
 from model_loader import load_production_model
 from feature_engineer import engineer_features
-from ab_testing import ABTestRouter, ABTestTracker, create_ab_test_router, create_ab_test_tracker
+from ab_testing import create_ab_test_router, create_ab_test_tracker
 
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
 
