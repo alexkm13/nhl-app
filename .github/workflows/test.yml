@@ -40,13 +40,9 @@ jobs:
         ruff check services/
         ruff format --check services/
     
-    - name: Run unit tests
+    - name: Run tests
       run: |
-        pytest tests/ -v -m unit --cov=services --cov-report=xml
-    
-    - name: Run integration tests
-      run: |
-        pytest tests/ -v -m integration
+        pytest services/gateway/tests/ -v --cov=services --cov-report=xml
     
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3
