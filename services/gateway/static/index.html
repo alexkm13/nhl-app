@@ -67,6 +67,9 @@
         // Store basic game info from games list for instant display
         let gamesListData = {}; // Map of gameId -> basic game info from games list
         
+        // Cache for team colors
+        let teamColors = {};
+        
         // Track all live games and their polling intervals
         let liveGamesPolling = {}; // Map of gameId -> { interval, goalCheckInterval, gameData }
         let liveGamesFeedCache = {}; // Map of gameId -> { events, homeTeam, awayTeam, homeLogo, awayLogo, isLive }
@@ -2203,6 +2206,22 @@
             }
         }
         
+        // Load team colors once
+        async function loadTeamColors() {
+            if (Object.keys(teamColors).length > 0) {
+                return; // Already loaded
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/team_colors.json`);
+                if (response.ok) {
+                    teamColors = await response.json();
+                }
+            } catch (error) {
+                console.error('Error loading team colors:', error);
+            }
+        }
+        
         async function loadGameStats(gameId) {
             const container = document.getElementById('game-stats-container');
             if (!container) return;
@@ -2210,6 +2229,9 @@
             container.innerHTML = '<div class="spinner"></div>';
             
             try {
+                // Load team colors first
+                await loadTeamColors();
+                
                 const response = await fetch(`${API_BASE}/v1/games/${gameId}/stats`);
                 const data = await response.json();
                 
@@ -2220,11 +2242,15 @@
                     
                     // Function to create a stat row with bar graph
                     // Away team on LEFT, Home team on RIGHT
-                    function createStatRow(statName, homeValue, awayValue, displayName = null, homeLogo = '', awayLogo = '') {
+                    function createStatRow(statName, homeValue, awayValue, displayName = null, homeLogo = '', awayLogo = '', homeAbbrev = '', awayAbbrev = '') {
                         const total = homeValue + awayValue;
                         const homePercent = total > 0 ? (homeValue / total * 100) : 50;
                         const awayPercent = total > 0 ? (awayValue / total * 100) : 50;
                         const label = displayName || statName.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                        
+                        // Get colors for this row
+                        const homeRowColor = teamColors[homeAbbrev] || '#888888';
+                        const awayRowColor = teamColors[awayAbbrev] || '#888888';
                         
                         return `
                             <div class="stat-row">
@@ -2238,8 +2264,8 @@
                                     ${homeLogo ? `<img src="${homeLogo}" alt="Home" class="stat-team-logo" onerror="this.style.display='none'">` : ''}
                                 </div>
                                 <div class="stat-bar-container">
-                                    <div class="stat-bar stat-bar-away" style="width: ${awayPercent}%"></div>
-                                    <div class="stat-bar stat-bar-home" style="width: ${homePercent}%"></div>
+                                    <div class="stat-bar stat-bar-away" style="width: ${awayPercent}%; background-color: ${awayRowColor};"></div>
+                                    <div class="stat-bar stat-bar-home" style="width: ${homePercent}%; background-color: ${homeRowColor};"></div>
                                 </div>
                             </div>
                         `;
@@ -2250,15 +2276,15 @@
                             <h2>Head-to-head</h2>
                         </div>
                         <div class="game-stats-body">
-                            ${createStatRow('shots', stats.shots.home, stats.shots.away, 'Shots', homeTeam.logo, awayTeam.logo)}
-                            ${createStatRow('hits', stats.hits.home, stats.hits.away, 'Hits', homeTeam.logo, awayTeam.logo)}
-                            ${createStatRow('faceoff_win_pct', stats.faceoff_win_pct.home, stats.faceoff_win_pct.away, 'Face-off win %', homeTeam.logo, awayTeam.logo)}
-                            ${createStatRow('penalty_minutes', stats.penalty_minutes.home, stats.penalty_minutes.away, 'Penalty minutes', homeTeam.logo, awayTeam.logo)}
-                            ${createStatRow('power_play_pct', stats.power_play_pct.home, stats.power_play_pct.away, 'Power play %', homeTeam.logo, awayTeam.logo)}
-                            ${createStatRow('power_play_opportunities', stats.power_play_opportunities.home, stats.power_play_opportunities.away, 'Power play opportunities', homeTeam.logo, awayTeam.logo)}
-                            ${createStatRow('blocked_shots', stats.blocked_shots.home, stats.blocked_shots.away, 'Blocked shots', homeTeam.logo, awayTeam.logo)}
-                            ${createStatRow('takeaways', stats.takeaways.home, stats.takeaways.away, 'Takeaways', homeTeam.logo, awayTeam.logo)}
-                            ${createStatRow('giveaways', stats.giveaways.home, stats.giveaways.away, 'Giveaways', homeTeam.logo, awayTeam.logo)}
+                            ${createStatRow('shots', stats.shots.home, stats.shots.away, 'Shots', homeTeam.logo, awayTeam.logo, homeTeam.abbrev, awayTeam.abbrev)}
+                            ${createStatRow('hits', stats.hits.home, stats.hits.away, 'Hits', homeTeam.logo, awayTeam.logo, homeTeam.abbrev, awayTeam.abbrev)}
+                            ${createStatRow('faceoff_win_pct', stats.faceoff_win_pct.home, stats.faceoff_win_pct.away, 'Face-off win %', homeTeam.logo, awayTeam.logo, homeTeam.abbrev, awayTeam.abbrev)}
+                            ${createStatRow('penalty_minutes', stats.penalty_minutes.home, stats.penalty_minutes.away, 'Penalty minutes', homeTeam.logo, awayTeam.logo, homeTeam.abbrev, awayTeam.abbrev)}
+                            ${createStatRow('power_play_pct', stats.power_play_pct.home, stats.power_play_pct.away, 'Power play %', homeTeam.logo, awayTeam.logo, homeTeam.abbrev, awayTeam.abbrev)}
+                            ${createStatRow('power_play_opportunities', stats.power_play_opportunities.home, stats.power_play_opportunities.away, 'Power play opportunities', homeTeam.logo, awayTeam.logo, homeTeam.abbrev, awayTeam.abbrev)}
+                            ${createStatRow('blocked_shots', stats.blocked_shots.home, stats.blocked_shots.away, 'Blocked shots', homeTeam.logo, awayTeam.logo, homeTeam.abbrev, awayTeam.abbrev)}
+                            ${createStatRow('takeaways', stats.takeaways.home, stats.takeaways.away, 'Takeaways', homeTeam.logo, awayTeam.logo, homeTeam.abbrev, awayTeam.abbrev)}
+                            ${createStatRow('giveaways', stats.giveaways.home, stats.giveaways.away, 'Giveaways', homeTeam.logo, awayTeam.logo, homeTeam.abbrev, awayTeam.abbrev)}
                         </div>
                     `;
                 } else {
