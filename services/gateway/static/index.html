@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NHL GameCast</title>
-    <link rel="stylesheet" href="/static/styles.css?v=14">
+    <link rel="stylesheet" href="/static/styles.css?v=37">
     <script>
         // Aggressive cache clearing
         (function() {
@@ -77,6 +77,27 @@
 
     <script>
         const API_BASE = window.location.origin || 'http://localhost:8000';
+        
+        // Team colors cache
+        let teamColors = {};
+        
+        // Load team colors JSON once
+        async function loadTeamColors() {
+            if (Object.keys(teamColors).length === 0) {
+                try {
+                    // Use /api/team_colors.json to avoid mount conflict
+                    const response = await fetch(`${API_BASE}/api/team_colors.json`);
+                    if (response.ok) {
+                        teamColors = await response.json();
+                    } else {
+                        console.warn('Could not load team colors, using defaults');
+                    }
+                } catch (error) {
+                    console.error('Error loading team colors:', error);
+                }
+            }
+            return teamColors;
+        }
         
         // Store polling interval for play-by-play updates
         let playByPlayPollInterval = null;
@@ -231,6 +252,8 @@
                             game_state: game.game_state,
                             period: game.period,
                             time_in_period: game.time_in_period,
+                            is_time_remaining: game.is_time_remaining,
+                            start_time_utc: game.start_time_utc,
                             overtime_type: game.overtime_type || null, // OT, SO, or null
                             is_live: game.game_state === 'LIVE' || game.game_state === 'CRIT'
                         };
@@ -317,10 +340,14 @@
                             let periodDisplay = '';
                             if (isLive) {
                                 // For live games, always try to show period and time remaining
+                                console.log('Live game - checking data:', game.game_id, 'period:', game.period, 'time_in_period:', game.time_in_period, 'is_time_remaining:', game.is_time_remaining);
                                 const period = game.period || game.periodDescriptor?.number || null;
                                 const timeInPeriod = game.time_in_period || game.timeInPeriod || null;
                                 
+                                console.log('Live game - parsed values:', game.game_id, 'period:', period, 'timeInPeriod:', timeInPeriod);
+                                
                                 if (period && timeInPeriod) {
+                                    console.log('Live game - has period and time, formatting:', game.game_id);
                                     // Format period: "1st", "2nd", "3rd", "OT", etc.
                                     let periodLabel;
                                     if (period === 1) {
@@ -367,20 +394,63 @@
                                     gameTimeDisplay = formattedTime;
                                     periodDisplay = periodLabel;
                                 } else {
-                                    // If period/time data is missing, show default time remaining
-                                    gameTimeDisplay = '20:00';
-                                    periodDisplay = '1st';
+                                    // If period/time data is missing for live game, try to get from start time or show "TBD"
+                                    // Don't show placeholder "20:00 1st" - it's not accurate
+                                    console.warn('Live game - missing period/time data:', game.game_id, 'period:', period, 'timeInPeriod:', timeInPeriod, 'start_time_utc:', game.start_time_utc);
+                                    if (game.start_time_utc) {
+                                        try {
+                                            const utcDate = new Date(game.start_time_utc);
+                                            const now = new Date();
+                                            // If game hasn't started yet, show start time
+                                            if (utcDate > now) {
+                                                const localTime = utcDate.toLocaleTimeString('en-US', {
+                                                    hour: 'numeric',
+                                                    minute: '2-digit',
+                                                    hour12: true
+                                                });
+                                                gameTimeDisplay = localTime;
+                                                periodDisplay = '';
+                                            } else {
+                                                // Game should have started but no period data - show "TBD"
+                                                gameTimeDisplay = 'TBD';
+                                                periodDisplay = '';
+                                            }
+                                        } catch (e) {
+                                            gameTimeDisplay = 'TBD';
+                                            periodDisplay = '';
+                                        }
+                                    } else {
+                                        gameTimeDisplay = 'TBD';
+                                        periodDisplay = '';
+                                    }
                                 }
-                            } else if (game.start_time_utc) {
-                                try {
-                                    const utcDate = new Date(game.start_time_utc);
-                                    const localTime = utcDate.toLocaleTimeString('en-US', {
-                                        hour: 'numeric',
-                                        minute: '2-digit',
-                                        hour12: true
-                                    });
-                                    gameTimeDisplay = localTime;
-                                } catch (e) {
+                            } else {
+                                // For future games (not live), show start time
+                                console.log('Future game - checking start_time_utc:', game.game_id, 'start_time_utc:', game.start_time_utc, 'typeof:', typeof game.start_time_utc);
+                                if (game.start_time_utc) {
+                                    try {
+                                        const utcDate = new Date(game.start_time_utc);
+                                        console.log('Date created:', utcDate, 'isNaN:', isNaN(utcDate.getTime()));
+                                        // Check if date is valid
+                                        if (isNaN(utcDate.getTime())) {
+                                            console.warn('Invalid date:', game.start_time_utc);
+                                            gameTimeDisplay = 'TBD';
+                                        } else {
+                                            const localTime = utcDate.toLocaleTimeString('en-US', {
+                                                hour: 'numeric',
+                                                minute: '2-digit',
+                                                hour12: true
+                                            });
+                                            console.log('Local time calculated:', localTime);
+                                            gameTimeDisplay = localTime;
+                                        }
+                                    } catch (e) {
+                                        console.error('Error parsing start time:', e, game.start_time_utc);
+                                        gameTimeDisplay = 'TBD';
+                                    }
+                                } else {
+                                    // No start time available - log for debugging
+                                    console.warn('No start_time_utc for game:', game.game_id, 'game_state:', game.game_state, 'game keys:', Object.keys(game));
                                     gameTimeDisplay = 'TBD';
                                 }
                             }
@@ -575,9 +645,10 @@
             const isLive = basicInfo.is_live || false;
             const gameState = basicInfo.game_state || '';
             const isFinal = gameState === 'OFF' || gameState === 'FINAL';
-            const period = basicInfo.period || 1;
-            const timeInPeriod = basicInfo.time_in_period || '00:00';
+            const period = basicInfo.period;  // Don't default - check if null/undefined
+            const timeInPeriod = basicInfo.time_in_period;  // Don't default - check if null/undefined
             const overtimeType = basicInfo.overtime_type || null;
+            const startTimeUtc = basicInfo.start_time_utc;
             
             // Format time and period for live games, or final status for finished games
             let timeDisplay = '';
@@ -596,7 +667,8 @@
                 // For final games, hide time and period, show final status instead
                 timeDisplay = '';
                 periodDisplay = '';
-            } else {
+            } else if (isLive && period !== null && period !== undefined && timeInPeriod !== null && timeInPeriod !== undefined) {
+                // Only show period/time if we have actual data for live games
                 // Convert time elapsed to time remaining
                 // timeInPeriod is elapsed time in MM:SS format (e.g., "00:30" = 30 seconds elapsed)
                 // We need to convert to time remaining
@@ -627,6 +699,25 @@
                 } else {
                     periodDisplay = `${period}th`;
                 }
+            } else if (startTimeUtc) {
+                // Game hasn't started yet or no period/time data - show start time
+                try {
+                    const utcDate = new Date(startTimeUtc);
+                    const localTime = utcDate.toLocaleTimeString('en-US', {
+                        hour: 'numeric',
+                        minute: '2-digit',
+                        hour12: true
+                    });
+                    timeDisplay = localTime;
+                    periodDisplay = '';
+                } catch (e) {
+                    timeDisplay = 'TBD';
+                    periodDisplay = '';
+                }
+            } else {
+                // No data available
+                timeDisplay = 'TBD';
+                periodDisplay = '';
             }
             
             const gameDetails = document.getElementById('gameDetails');
@@ -720,12 +811,93 @@
             gameDetails.scrollIntoView({ behavior: 'smooth' });
         }
         
+        // Update win probability graph when new events occur
+        async function updateWinProbGraph(gameId) {
+            // Only update if we're viewing this game
+            if (currentGameId !== gameId) {
+                return;
+            }
+            
+            try {
+                // Fetch both current win probability and history data
+                const response = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`);
+                const historyResponse = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/history`);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    
+                    // Add history data if available
+                    if (historyResponse.ok) {
+                        const historyResult = await historyResponse.json();
+                        data.historyData = historyResult.data || [];
+                        data.currentGameTime = historyResult.current_game_time || null; // Elapsed seconds from game start
+                    }
+                    
+                    // Update cache
+                    gameDataCache[gameId] = data;
+                    
+                    // Only update UI if we're still viewing this game
+                    if (currentGameId === gameId) {
+                        // Update the graph without re-rendering everything (preserve tab state)
+                        updateWinProbGraphOnly(data);
+                    }
+                }
+            } catch (error) {
+                // Silently fail - graph will update on next polling cycle
+                console.warn(`[Graph] Error updating win probability graph for ${gameId}:`, error);
+            }
+        }
+        
+        // Update only the win probability graph section without re-rendering the entire display
+        function updateWinProbGraphOnly(data) {
+            const game = data.game;
+            const score = data.score;
+            const winProb = data.win_probability;
+            const historyData = data.historyData || [];
+            
+            const homeTeam = score.home.team;
+            const awayTeam = score.away.team;
+            const homeProb = parseFloat(winProb[homeTeam]) || 0;
+            const awayProb = parseFloat(winProb[awayTeam]) || 0;
+            const gameId = data.game.id;
+            
+            // Get current game state
+            const isLive = game.is_live || game.game_state === 'LIVE' || game.game_state === 'CRIT';
+            const homeLogo = score.home.logo || '';
+            const awayLogo = score.away.logo || '';
+            const homeAbbrev = score.home.abbrev || '';
+            const awayAbbrev = score.away.abbrev || '';
+            const currentGameTime = data.currentGameTime || null;
+            
+            // Find the win-prob container and update only the graph
+            const winProbContainer = document.querySelector('.win-prob');
+            if (winProbContainer) {
+                // Update the graph HTML
+                const graphHtml = generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive, homeLogo, awayLogo, homeAbbrev, awayAbbrev, currentGameTime);
+                winProbContainer.innerHTML = `
+                    <div class="win-prob-title">Win Probability</div>
+                    ${graphHtml}
+                `;
+            }
+        }
+        
         // Refresh game data in background
         async function refreshGameData(gameId) {
             try {
+                // Fetch both current win probability and history data
                 const response = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`);
+                const historyResponse = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/history`);
+                
                 if (response.ok) {
                     const data = await response.json();
+                    
+                    // Add history data if available
+                    if (historyResponse.ok) {
+                        const historyResult = await historyResponse.json();
+                        data.historyData = historyResult.data || [];
+                        data.currentGameTime = historyResult.current_game_time || null; // Elapsed seconds from game start
+                    }
+                    
                     gameDataCache[gameId] = data;
                     // Only update UI if we're still viewing this game
                     if (currentGameId === gameId) {
@@ -968,6 +1140,8 @@
                                     game_state: game.game_state,
                                     period: game.period,
                                     time_in_period: game.time_in_period,
+                                    is_time_remaining: game.is_time_remaining,
+                                    start_time_utc: game.start_time_utc,
                                     overtime_type: game.overtime_type || null, // OT, SO, or null
                                     is_live: game.game_state === 'LIVE' || game.game_state === 'CRIT'
                                 };
@@ -1103,20 +1277,63 @@
                                                     gameTimeDisplay = formattedTime;
                                                     periodDisplay = periodLabel;
                                                 } else {
-                                                    // If period/time data is missing, show default time remaining
-                                                    gameTimeDisplay = '20:00';
-                                                    periodDisplay = '1st';
-                                                }
-                                            } else if (game.start_time_utc) {
-                                                try {
-                                                    const utcDate = new Date(game.start_time_utc);
-                                                    const localTime = utcDate.toLocaleTimeString('en-US', {
-                                                        hour: 'numeric',
-                                                        minute: '2-digit',
-                                                        hour12: true
-                                                    });
-                                                    gameTimeDisplay = localTime;
-                                                } catch (e) {
+                                                    // If period/time data is missing for live game, try to get from start time or show "TBD"
+                                                    // Don't show placeholder "20:00 1st" - it's not accurate
+                                                    console.warn('Live game (polling) - missing period/time data:', game.game_id, 'period:', period, 'timeInPeriod:', timeInPeriod, 'start_time_utc:', game.start_time_utc);
+                                                    if (game.start_time_utc) {
+                                                        try {
+                                                            const utcDate = new Date(game.start_time_utc);
+                                                            const now = new Date();
+                                                            // If game hasn't started yet, show start time
+                                                            if (utcDate > now) {
+                                                                const localTime = utcDate.toLocaleTimeString('en-US', {
+                                                                    hour: 'numeric',
+                                                                    minute: '2-digit',
+                                                                    hour12: true
+                                                                });
+                                                                gameTimeDisplay = localTime;
+                                                                periodDisplay = '';
+                                                            } else {
+                                                                // Game should have started but no period data - show "TBD"
+                                                                gameTimeDisplay = 'TBD';
+                                                                periodDisplay = '';
+                                                            }
+                                                        } catch (e) {
+                                                            gameTimeDisplay = 'TBD';
+                                                            periodDisplay = '';
+                                                        }
+                                                    } else {
+                                                        gameTimeDisplay = 'TBD';
+                                                        periodDisplay = '';
+                                                    }
+                                            }
+                                            } else {
+                                                // For future games (not live), show start time
+                                                console.log('Future game (polling) - checking start_time_utc:', game.game_id, 'start_time_utc:', game.start_time_utc, 'typeof:', typeof game.start_time_utc);
+                                                if (game.start_time_utc) {
+                                                    try {
+                                                        const utcDate = new Date(game.start_time_utc);
+                                                        console.log('Date created (polling):', utcDate, 'isNaN:', isNaN(utcDate.getTime()));
+                                                        // Check if date is valid
+                                                        if (isNaN(utcDate.getTime())) {
+                                                            console.warn('Invalid date (polling):', game.start_time_utc);
+                                                            gameTimeDisplay = 'TBD';
+                                                        } else {
+                                                            const localTime = utcDate.toLocaleTimeString('en-US', {
+                                                                hour: 'numeric',
+                                                                minute: '2-digit',
+                                                                hour12: true
+                                                            });
+                                                            console.log('Local time calculated (polling):', localTime);
+                                                            gameTimeDisplay = localTime;
+                                                        }
+                                                    } catch (e) {
+                                                        console.error('Error parsing start time (polling):', e, game.start_time_utc);
+                                                        gameTimeDisplay = 'TBD';
+                                                    }
+                                                } else {
+                                                    // No start time available
+                                                    console.warn('No start_time_utc for game (polling):', game.game_id, 'game_state:', game.game_state, 'game keys:', Object.keys(game));
                                                     gameTimeDisplay = 'TBD';
                                                 }
                                             }
@@ -1222,15 +1439,25 @@
                 };
             }
             
-            // Update feed cache immediately
-            updateGameFeedCache(gameId);
+            // Update feed cache immediately if we haven't already rendered cached data
+            // If cached data was rendered in loadPlayByPlay, we'll update it here
+            // Small delay to let initial load complete and avoid race conditions
+            setTimeout(() => {
+                updateGameFeedCache(gameId);
+            }, 300); // Small delay to let initial load complete
             
-            // Ultra-fast polling (every 500ms) specifically for goals - goals must appear immediately
+            // Fast polling (every 2 seconds) specifically for goals - goals must appear quickly
             const goalCheckInterval = setInterval(async () => {
                 // Only poll if we're still viewing this game
                 if (currentGameId !== gameId) {
                     clearInterval(goalCheckInterval);
                     return;
+                }
+                
+                // Skip if feed is currently loading
+                const feed = document.getElementById('playbyplay-feed');
+                if (feed && (feed.innerHTML.includes('spinner') || feed.innerHTML.includes('Loading'))) {
+                    return; // Don't refresh while loading
                 }
                 
                 try {
@@ -1255,6 +1482,12 @@
                                 updateGameFeedCache(gameId).catch(() => {
                                     // Silently fail - errors are logged in updateGameFeedCache
                                 });
+                                
+                                // Also immediately update the win probability graph when new events occur
+                                // This ensures users see probability changes in real-time
+                                updateWinProbGraph(gameId).catch(() => {
+                                    // Silently fail - graph will update on next polling cycle
+                                });
                             }
                         }
                     }
@@ -1266,9 +1499,9 @@
                     }
                     // Don't stop polling on errors - will retry on next poll
                 }
-            }, 500); // Check every 500ms for goals and new events (ultra-fast for immediate goal display)
+            }, 2000); // Check every 2 seconds for goals and new events (fast enough for quick goal display)
             
-            // Normal polling every 1 second for general updates (faster feed updates)
+            // Normal polling every 5 seconds for general updates (gives feed time to load)
             const pollInterval = setInterval(async () => {
                 // Only poll if we're still viewing this game
                 if (currentGameId !== gameId) {
@@ -1276,8 +1509,14 @@
                     return;
                 }
                 
+                // Skip if feed is currently loading
+                const feed = document.getElementById('playbyplay-feed');
+                if (feed && (feed.innerHTML.includes('spinner') || feed.innerHTML.includes('Loading'))) {
+                    return; // Don't refresh while loading
+                }
+                
                 try {
-                    // Always update feed cache for live games (faster updates) - non-blocking
+                    // Update feed cache for live games (gives time for feed to load) - non-blocking
                     updateGameFeedCache(gameId).catch(() => {
                         // Silently fail - errors are logged in updateGameFeedCache
                     });
@@ -1301,7 +1540,7 @@
                     }
                     // On error, continue polling (game might still be live)
                 }
-            }, 1000); // Poll every 1 second for faster feed updates
+            }, 5000); // Poll every 5 seconds for feed updates (gives feed time to load and render)
             
             // Store intervals for this game
             liveGamesPolling[gameId] = {
@@ -1316,14 +1555,41 @@
         
         // Function to update feed cache for a game (background update)
         async function updateGameFeedCache(gameId) {
+            console.log(`[Feed] updateGameFeedCache called for ${gameId}`);
             // Prevent multiple simultaneous updates for the same game
             if (ongoingFeedUpdates.has(gameId)) {
+                console.log(`[Feed] updateGameFeedCache: Already updating ${gameId}, skipping`);
                 return;
             }
             
+            // Check if feed is currently loading - if so, skip this update
+            const feed = document.getElementById('playbyplay-feed');
+            if (!feed) {
+                return; // Feed element doesn't exist
+            }
+            
+            // Only skip if we have cached data AND spinner is showing (race condition)
+            // Otherwise, allow updates to proceed (especially if we don't have cached data yet)
+            // This prevents the feed from getting stuck in a loading state
+            if (feed.innerHTML.includes('spinner') && 
+                liveGamesFeedCache[gameId]?.events && 
+                liveGamesFeedCache[gameId].events.length > 0) {
+                // We have cached events and spinner is showing - might be a race condition, skip this update
+                return;
+            }
+            // Otherwise, proceed with update (especially if we don't have cached data yet)
+            
             ongoingFeedUpdates.add(gameId);
             try {
-                const response = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=50`);
+                // Add timeout to fetch request (15 seconds)
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 15000);
+                
+                const response = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=50`, {
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+                
                 if (!response.ok) {
                     console.error(`[Feed] Failed to fetch play-by-play for ${gameId}: ${response.status} ${response.statusText}`);
                     ongoingFeedUpdates.delete(gameId);
@@ -1331,21 +1597,27 @@
                 }
                 
                 const data = await response.json();
-                // Only log if we have events to help debug
-                if (data.events && data.events.length > 0) {
-                    console.log(`[Feed] Received data for ${gameId}:`, {
-                        hasEvents: !!data.events,
-                        eventCount: data.events?.length || 0,
-                        gameState: data.game_state
-                    });
-                }
+                // Always log to help debug (not just when events exist)
+                console.log(`[Feed] Received response for ${gameId}:`, {
+                    hasEvents: !!data.events,
+                    eventCount: data.events?.length || 0,
+                    gameState: data.game_state,
+                    responseOk: response.ok
+                });
                 
                 if (data.events) {
                     const cached = liveGamesFeedCache[gameId];
                     if (cached) {
+                        // Store previous counts BEFORE updating (so we can detect new events)
+                        const previousEventCount = cached.lastEventCount || 0;
+                        const previousGoalCount = cached.lastGoalCount || 0;
+                        
+                        // Update cache with new data
                         cached.events = data.events;
-                        cached.lastEventCount = data.events.length;
-                        cached.lastGoalCount = data.events.filter(e => e.event_type === 'GOAL').length;
+                        const currentEventCount = data.events.length;
+                        const currentGoalCount = data.events.filter(e => e.event_type === 'GOAL').length;
+                        cached.lastEventCount = currentEventCount;
+                        cached.lastGoalCount = currentGoalCount;
                         cached.lastUpdate = Date.now();
                         // Update game state from API response
                         if (data.game_state) {
@@ -1360,6 +1632,14 @@
                                     // Update the feed display using cached data
                                     const isLive = cached.isLive !== undefined ? cached.isLive : (data.game_state === 'LIVE' || data.game_state === 'CRIT');
                                     renderFeedEvents(cached.events, cached.homeTeam, cached.awayTeam, cached.homeLogo, cached.awayLogo, isLive, gameId, data.game_state);
+                                    
+                                    // If new events were detected (especially goals), update the graph immediately
+                                    if (currentEventCount > previousEventCount || currentGoalCount > previousGoalCount) {
+                                        // New events detected - update graph immediately
+                                        updateWinProbGraph(gameId).catch(() => {
+                                            // Silently fail - graph will update on next polling cycle
+                                        });
+                                    }
                                 } catch (renderError) {
                                     console.error('Error rendering feed events:', renderError);
                                     // Don't stop polling on render errors
@@ -1384,14 +1664,35 @@
                             cached.lastEventCount = data.events ? data.events.length : 0;
                             cached.lastGoalCount = data.events ? data.events.filter(e => e.event_type === 'GOAL').length : 0;
                             cached.lastUpdate = Date.now();
+                            
+                            // If this is the currently viewed game and we have events, render them
+                            if (currentGameId === gameId && data.events && data.events.length > 0) {
+                                const feed = document.getElementById('playbyplay-feed');
+                                if (feed) {
+                                    try {
+                                        const isLive = cached.isLive !== undefined ? cached.isLive : (data.game_state === 'LIVE' || data.game_state === 'CRIT');
+                                        console.log(`[Feed] Rendering events for ${gameId} (initializing cache):`, {
+                                            eventCount: data.events.length,
+                                            gameState: data.game_state,
+                                            isLive: isLive
+                                        });
+                                        renderFeedEvents(cached.events, cached.homeTeam, cached.awayTeam, cached.homeLogo, cached.awayLogo, isLive, gameId, data.game_state);
+                                    } catch (renderError) {
+                                        console.error('Error rendering feed events:', renderError);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             } catch (error) {
-                // Silently handle network errors - don't spam console
-                // Only log if it's a non-network error or if it's the first error
-                if (error.name !== 'TypeError' || !error.message.includes('fetch')) {
-                    console.error('Error updating feed cache:', error);
+                // Handle errors appropriately
+                if (error.name === 'AbortError') {
+                    console.warn(`[Feed] Timeout updating feed cache for ${gameId} - request took too long`);
+                } else if (error.name === 'TypeError' && error.message.includes('fetch')) {
+                    console.warn(`[Feed] Network error updating feed cache for ${gameId} - connection issue`);
+                } else {
+                    console.error(`[Feed] Error updating feed cache for ${gameId}:`, error);
                 }
                 // Don't stop polling on errors - will retry on next poll
             } finally {
@@ -1467,16 +1768,46 @@
             // Stop any existing polling
             stopLiveScorePolling();
             
-            // Poll every 500ms for live scores and times (ultra-fast updates while viewing)
+            // Poll every 2 seconds for live scores and times (frequent updates while viewing)
             liveScorePollInterval = setInterval(async () => {
                 // Only poll if we're still viewing this game and it's still live
                 if (currentGameId === gameId && currentGameIsLive) {
                     try {
+                        // Fetch both current win probability and history data for graph
                         const response = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`);
+                        const historyResponse = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/history`);
+                        
                         if (response.ok) {
                             const data = await response.json();
-                            // Update only the score display, not the entire page
-                            updateLiveScoreDisplay(data);
+                            
+                            // Add history data if available
+                            if (historyResponse.ok) {
+                                const historyResult = await historyResponse.json();
+                                data.historyData = historyResult.data || [];
+                                data.currentGameTime = historyResult.current_game_time || null; // Elapsed seconds from game start
+                            }
+                            
+                            // Update the graph with latest model predictions
+                            gameDataCache[gameId] = data;
+                            if (currentGameId === gameId) {
+                                // Check if game details are already rendered
+                                const gameDetails = document.getElementById('gameDetails');
+                                const isAlreadyRendered = gameDetails && gameDetails.innerHTML.includes('scoreboard-winprob-container');
+                                
+                                if (isAlreadyRendered) {
+                                    // Only update the graph and scoreboard, don't re-render everything
+                                    updateWinProbGraphOnly(data);
+                                    // Update scores in the scoreboard
+                                    const awayScoreEl = document.querySelector('.live-score-container .live-team-row:first-child .live-team-score');
+                                    const homeScoreEl = document.querySelector('.live-score-container .live-team-row:last-child .live-team-score');
+                                    if (awayScoreEl) awayScoreEl.textContent = data.score.away.goals;
+                                    if (homeScoreEl) homeScoreEl.textContent = data.score.home.goals;
+                                } else {
+                                    // First render - use full displayResults
+                                    displayResults(data);
+                                }
+                            }
+                            
                             // Also update currentGameIsLive in case it changed
                             const isLive = data.game && (data.game.is_live || data.game.game_state === 'LIVE' || data.game.game_state === 'CRIT');
                             currentGameIsLive = isLive;
@@ -1495,7 +1826,7 @@
                     // Stop polling if we've navigated away or game is no longer live
                     stopLiveScorePolling();
                 }
-            }, 500); // Poll every 500ms for real-time updates
+            }, 2000); // Poll every 2 seconds for live games - updates graph with latest model predictions
         }
         
         function stopLiveScorePolling() {
@@ -1511,42 +1842,57 @@
             
             const homeScore = score.home.goals;
             const awayScore = score.away.goals;
-            const period = game.period || 1;
-            const timeInPeriod = game.time_in_period || '00:00';
+            const period = game.period;  // Don't default - check if null/undefined
+            const timeInPeriod = game.time_in_period;  // Don't default - check if null/undefined
             const isLive = game.is_live || false;
+            const isTimeRemaining = game.is_time_remaining === true;
             
             // Convert time elapsed to time remaining
-            // timeInPeriod is elapsed time in MM:SS format (e.g., "00:30" = 30 seconds elapsed)
-            // We need to convert to time remaining
+            // Only show period/time if we have actual data
             let timeDisplay = '';
-            if (timeInPeriod && timeInPeriod !== '00:00') {
-                const [elapsedMinutes, elapsedSeconds] = timeInPeriod.split(':').map(Number);
-                const elapsedTotalSeconds = elapsedMinutes * 60 + elapsedSeconds;
-                
-                // Determine period length: 20 minutes (1200 seconds) for regulation, 5 minutes (300 seconds) for OT
-                const periodLengthSeconds = (period <= 3) ? 1200 : 300;
-                const remainingTotalSeconds = Math.max(0, periodLengthSeconds - elapsedTotalSeconds);
-                
-                const remainingMinutes = Math.floor(remainingTotalSeconds / 60);
-                const remainingSecs = remainingTotalSeconds % 60;
-                timeDisplay = `${remainingMinutes}:${remainingSecs.toString().padStart(2, '0')}`;
-            } else {
-                // If time is 00:00, show full period time remaining
-                timeDisplay = (period <= 3) ? '20:00' : '5:00';
-            }
-            
-            // Format period - use the same format as in displayResults
             let periodDisplay = '';
-            if (period === 1) {
-                periodDisplay = '1st';
-            } else if (period === 2) {
-                periodDisplay = '2nd';
-            } else if (period === 3) {
-                periodDisplay = '3rd';
-            } else if (period === 4) {
-                periodDisplay = 'OT';
+            
+            if (period !== null && period !== undefined && timeInPeriod !== null && timeInPeriod !== undefined) {
+                // We have actual period/time data
+                if (timeInPeriod && timeInPeriod !== '00:00') {
+                    if (isTimeRemaining) {
+                        // Already time remaining, use directly
+                        const [minutes, seconds] = timeInPeriod.split(':').map(Number);
+                        timeDisplay = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+                    } else {
+                        // Convert elapsed time to remaining
+                        const [elapsedMinutes, elapsedSeconds] = timeInPeriod.split(':').map(Number);
+                        const elapsedTotalSeconds = elapsedMinutes * 60 + elapsedSeconds;
+                        
+                        // Determine period length: 20 minutes (1200 seconds) for regulation, 5 minutes (300 seconds) for OT
+                        const periodLengthSeconds = (period <= 3) ? 1200 : 300;
+                        const remainingTotalSeconds = Math.max(0, periodLengthSeconds - elapsedTotalSeconds);
+                        
+                        const remainingMinutes = Math.floor(remainingTotalSeconds / 60);
+                        const remainingSecs = remainingTotalSeconds % 60;
+                        timeDisplay = `${remainingMinutes}:${remainingSecs.toString().padStart(2, '0')}`;
+                    }
+                } else {
+                    // If time is 00:00, show full period time remaining
+                    timeDisplay = (period <= 3) ? '20:00' : '5:00';
+                }
+                
+                // Format period - use the same format as in displayResults
+                if (period === 1) {
+                    periodDisplay = '1st';
+                } else if (period === 2) {
+                    periodDisplay = '2nd';
+                } else if (period === 3) {
+                    periodDisplay = '3rd';
+                } else if (period === 4) {
+                    periodDisplay = 'OT';
+                } else {
+                    periodDisplay = `${period}th`;
+                }
             } else {
-                periodDisplay = `${period}th`;
+                // No period/time data available - don't show placeholder
+                timeDisplay = '';
+                periodDisplay = '';
             }
             
             // Update score displays
@@ -1588,29 +1934,45 @@
             const homeScore = score.home.goals;
             const awayScore = score.away.goals;
 
-            const homeProb = winProb[homeTeam];
-            const awayProb = winProb[awayTeam];
+            // Ensure probabilities are parsed as floats with proper precision
+            const homeProb = parseFloat(winProb[homeTeam]) || 0;
+            const awayProb = parseFloat(winProb[awayTeam]) || 0;
 
             const gameId = data.game.id;
             
-            // Hide games list and show game details
-            showGameDetails();
+            // Check if game details are already rendered to avoid unnecessary re-rendering
+            const isAlreadyRendered = gameDetails && gameDetails.innerHTML.includes('scoreboard-winprob-container');
             
-            // Fetch historical win probability data for graphing
-            let historyData = [];
-            try {
-                const historyResponse = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/history`);
-                if (historyResponse.ok) {
-                    const historyResult = await historyResponse.json();
-                    historyData = historyResult.data || [];
-                }
-            } catch (error) {
-                console.error('Error fetching win probability history:', error);
+            // Preserve the currently active tab before re-rendering
+            const activeTab = document.querySelector('.tab.active');
+            const activeTabId = activeTab ? activeTab.id : null;
+            const activeTabName = activeTabId ? activeTabId.replace('-tab', '') : 'feed';
+            
+            // Only hide games list and show game details if not already rendered
+            if (!isAlreadyRendered) {
+                showGameDetails();
             }
             
-            // If history data is sparse or missing, generate probability points from game events
-            // This ensures the graph shows changes even if database predictions are limited
-            if (historyData.length < 10) {
+            // Fetch historical win probability data for graphing
+            // Check if historyData was already fetched in refreshGameData
+            let historyData = data.historyData || [];
+            if (historyData.length === 0) {
+                try {
+                    const historyResponse = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/history`);
+                    if (historyResponse.ok) {
+                        const historyResult = await historyResponse.json();
+                        historyData = historyResult.data || [];
+                        data.currentGameTime = historyResult.current_game_time || null; // Elapsed seconds from game start
+                    }
+                } catch (error) {
+                    console.error('Error fetching win probability history:', error);
+                }
+            }
+            
+            // Only generate probability points if we have NO database predictions at all
+            // This ensures we use model predictions when available, not calculated probabilities
+            // Cache this check to avoid repeatedly fetching playbyplay when historyData is empty
+            if (historyData.length === 0 && !gameDataCache[gameId]?.historyDataAttempted) {
                 try {
                     // Fetch play-by-play to generate probability points from game events
                     const playByPlayResponse = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay`);
@@ -1742,9 +2104,15 @@
                                 historyData = generatedPoints;
                             }
                         }
+                        // Mark that we attempted to fetch history to avoid repeated fetches
+                        if (!gameDataCache[gameId]) gameDataCache[gameId] = {};
+                        gameDataCache[gameId].historyDataAttempted = true;
                     }
                 } catch (error) {
                     console.error('Error generating probability from game events:', error);
+                    // Mark attempt even if it failed to avoid repeated failures
+                    if (!gameDataCache[gameId]) gameDataCache[gameId] = {};
+                    gameDataCache[gameId].historyDataAttempted = true;
                 }
             }
             
@@ -1831,18 +2199,18 @@
                         </div>
                         <div class="win-prob">
                             <div class="win-prob-title">Win Probability</div>
-                            ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, false, finalHomeLogo, finalAwayLogo, finalData.home_abbrev || '', finalData.away_abbrev || '')}
+                            ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, false, finalHomeLogo, finalAwayLogo, finalData.home_abbrev || '', finalData.away_abbrev || '', null)}
                         </div>
                     </div>
 
                 <div class="game-tabs">
-                    <div class="tab active" onclick="switchTab('feed', '${gameId}')" id="feed-tab">Feed</div>
-                    <div class="tab" onclick="switchTab('game', '${gameId}')" id="game-tab">Game</div>
-                    <div class="tab" onclick="switchTab('away-team', '${gameId}')" id="away-team-tab">${finalData.away_abbrev || awayTeam.substring(0, 3).toUpperCase()}</div>
-                    <div class="tab" onclick="switchTab('home-team', '${gameId}')" id="home-team-tab">${finalData.home_abbrev || homeTeam.substring(0, 3).toUpperCase()}</div>
+                    <div class="tab ${activeTabName === 'feed' ? 'active' : ''}" onclick="switchTab('feed', '${gameId}')" id="feed-tab">Feed</div>
+                    <div class="tab ${activeTabName === 'game' ? 'active' : ''}" onclick="switchTab('game', '${gameId}')" id="game-tab">Game</div>
+                    <div class="tab ${activeTabName === 'away-team' ? 'active' : ''}" onclick="switchTab('away-team', '${gameId}')" id="away-team-tab">${finalData.away_abbrev || awayTeam.substring(0, 3).toUpperCase()}</div>
+                    <div class="tab ${activeTabName === 'home-team' ? 'active' : ''}" onclick="switchTab('home-team', '${gameId}')" id="home-team-tab">${finalData.home_abbrev || homeTeam.substring(0, 3).toUpperCase()}</div>
                 </div>
                 <div id="powerplay-display" style="display: none;"></div>
-                <div id="feed-content" class="tab-content active">
+                <div id="feed-content" class="tab-content ${activeTabName === 'feed' ? 'active' : ''}">
                     <div id="playbyplay-feed" class="playbyplay-feed">
                         <div class="spinner"></div>
                     </div>
@@ -1884,8 +2252,9 @@
             const isLive = game.is_live || false;
             const gameState = game.game_state || '';
             const gameIsFinal = gameState === 'OFF' || gameState === 'FINAL';
-            const period = game.period || 1;
-            const timeInPeriod = game.time_in_period || '00:00';
+            const period = game.period;  // Don't default - check if null/undefined
+            const timeInPeriod = game.time_in_period;  // Don't default - check if null/undefined
+            const isTimeRemaining = game.is_time_remaining === true;
             const gameOvertimeType = game.overtime_type || data.overtime_type || null;
             
             // Format time and period for live games, or final status for finished games
@@ -1905,21 +2274,29 @@
                 // For final games, hide time and period, show final status instead
                 timeDisplay = '';
                 periodDisplay = '';
-            } else {
+            } else if (period !== null && period !== undefined && timeInPeriod !== null && timeInPeriod !== undefined) {
+                // Only show period/time if we have actual data
                 // Convert time elapsed to time remaining
                 // timeInPeriod is elapsed time in MM:SS format (e.g., "00:30" = 30 seconds elapsed)
                 // We need to convert to time remaining
                 if (timeInPeriod && timeInPeriod !== '00:00') {
-                    const [elapsedMinutes, elapsedSeconds] = timeInPeriod.split(':').map(Number);
-                    const elapsedTotalSeconds = elapsedMinutes * 60 + elapsedSeconds;
-                    
-                    // Determine period length: 20 minutes (1200 seconds) for regulation, 5 minutes (300 seconds) for OT
-                    const periodLengthSeconds = (period <= 3) ? 1200 : 300;
-                    const remainingTotalSeconds = Math.max(0, periodLengthSeconds - elapsedTotalSeconds);
-                    
-                    const remainingMinutes = Math.floor(remainingTotalSeconds / 60);
-                    const remainingSecs = remainingTotalSeconds % 60;
-                    timeDisplay = `${remainingMinutes}:${remainingSecs.toString().padStart(2, '0')}`;
+                    if (isTimeRemaining) {
+                        // Already time remaining, use directly
+                        const [minutes, seconds] = timeInPeriod.split(':').map(Number);
+                        timeDisplay = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+                    } else {
+                        // Convert elapsed time to remaining
+                        const [elapsedMinutes, elapsedSeconds] = timeInPeriod.split(':').map(Number);
+                        const elapsedTotalSeconds = elapsedMinutes * 60 + elapsedSeconds;
+                        
+                        // Determine period length: 20 minutes (1200 seconds) for regulation, 5 minutes (300 seconds) for OT
+                        const periodLengthSeconds = (period <= 3) ? 1200 : 300;
+                        const remainingTotalSeconds = Math.max(0, periodLengthSeconds - elapsedTotalSeconds);
+                        
+                        const remainingMinutes = Math.floor(remainingTotalSeconds / 60);
+                        const remainingSecs = remainingTotalSeconds % 60;
+                        timeDisplay = `${remainingMinutes}:${remainingSecs.toString().padStart(2, '0')}`;
+                    }
                 } else {
                     // If time is 00:00, show full period time remaining
                     timeDisplay = (period <= 3) ? '20:00' : '5:00';
@@ -1937,6 +2314,31 @@
                 } else {
                     periodDisplay = `${period}th`;
                 }
+            } else {
+                // No period/time data available - don't show placeholder
+                timeDisplay = '';
+                periodDisplay = '';
+            }
+            
+            // If already rendered, only update the graph and scoreboard without re-rendering everything
+            if (isAlreadyRendered) {
+                // Update win probability graph
+                updateWinProbGraphOnly(data);
+                
+                // Update scores in the scoreboard
+                const awayScoreEl = document.querySelector('.live-score-container .live-team-row:first-child .live-team-score');
+                const homeScoreEl = document.querySelector('.live-score-container .live-team-row:last-child .live-team-score');
+                if (awayScoreEl) awayScoreEl.textContent = awayScore;
+                if (homeScoreEl) homeScoreEl.textContent = homeScore;
+                
+                // Update time and period if available
+                const timeEl = document.querySelector('.live-time-remaining');
+                const periodEl = document.querySelector('.live-period');
+                if (timeEl && timeDisplay) timeEl.textContent = timeDisplay;
+                if (periodEl && periodDisplay) periodEl.textContent = periodDisplay;
+                
+                // Don't re-render the entire UI - just update what's needed
+                return;
             }
             
             gameDetails.innerHTML = `
@@ -1973,17 +2375,17 @@
                     </div>
                     <div class="win-prob">
                         <div class="win-prob-title">Win Probability</div>
-                        ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive, homeLogo, awayLogo, score.home.abbrev || '', score.away.abbrev || '')}
+                        ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive, homeLogo, awayLogo, score.home.abbrev || '', score.away.abbrev || '', data.currentGameTime || null)}
                     </div>
                 </div>
 
                 <div class="game-tabs">
-                    <div class="tab active" onclick="switchTab('feed', '${gameId}')" id="feed-tab">Feed</div>
-                    <div class="tab" onclick="switchTab('game', '${gameId}')" id="game-tab">Game</div>
-                    <div class="tab" onclick="switchTab('away-team', '${gameId}')" id="away-team-tab">${score.away.abbrev || awayTeam.substring(0, 3).toUpperCase()}</div>
-                    <div class="tab" onclick="switchTab('home-team', '${gameId}')" id="home-team-tab">${score.home.abbrev || homeTeam.substring(0, 3).toUpperCase()}</div>
+                    <div class="tab ${activeTabName === 'feed' ? 'active' : ''}" onclick="switchTab('feed', '${gameId}')" id="feed-tab">Feed</div>
+                    <div class="tab ${activeTabName === 'game' ? 'active' : ''}" onclick="switchTab('game', '${gameId}')" id="game-tab">Game</div>
+                    <div class="tab ${activeTabName === 'away-team' ? 'active' : ''}" onclick="switchTab('away-team', '${gameId}')" id="away-team-tab">${score.away.abbrev || awayTeam.substring(0, 3).toUpperCase()}</div>
+                    <div class="tab ${activeTabName === 'home-team' ? 'active' : ''}" onclick="switchTab('home-team', '${gameId}')" id="home-team-tab">${score.home.abbrev || homeTeam.substring(0, 3).toUpperCase()}</div>
                 </div>
-                <div id="feed-content" class="tab-content active">
+                <div id="feed-content" class="tab-content ${activeTabName === 'feed' ? 'active' : ''}">
                     <div id="playbyplay-feed" class="playbyplay-feed">
                         <div class="spinner"></div>
                     </div>
@@ -2034,7 +2436,7 @@
             status.style.display = 'block';
         }
 
-        function generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive, homeLogo = '', awayLogo = '', homeAbbrev = '', awayAbbrev = '') {
+        function generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, isLive, homeLogo = '', awayLogo = '', homeAbbrev = '', awayAbbrev = '', currentGameTime = null) {
             // Determine graph dimensions
             const width = 400;
             const height = 120;
@@ -2047,18 +2449,33 @@
             
             // If no historical data, create a single point at current probability
             if (!historyData || historyData.length === 0) {
-                // Create a simple horizontal line at current probability
-                const currentProb = homeProb / 100;
-                const x1 = padding.left;
-                const x2 = width - padding.right;
-                const y = padding.top + chartHeight - (currentProb * chartHeight);
-                points = [
-                    { x: x1, y: y },
-                    { x: x2, y: y }
-                ];
-                minTime = 0;
-                maxTime = 3600; // Assume 60 minutes (3 periods * 20 minutes) for a full game
-                timeRange = maxTime - minTime;
+                // For live games, use current game time if available
+                if (isLive && currentGameTime !== null && currentGameTime !== undefined) {
+                    const currentProb = homeProb / 100;
+                    minTime = 0;
+                    maxTime = Math.max(3600, currentGameTime + 300); // At least 60 minutes, or current time + buffer
+                    timeRange = maxTime - minTime;
+                    const x1 = padding.left;
+                    const x2 = padding.left + (currentGameTime - minTime) / timeRange * chartWidth;
+                    const y = padding.top + chartHeight - (currentProb * chartHeight);
+                    points = [
+                        { x: x1, y: y, prob: 0.5, ts: 0 }, // Start at 50/50
+                        { x: x2, y: y, prob: currentProb, ts: currentGameTime } // Current point
+                    ];
+                } else {
+                    // Create a simple horizontal line at current probability
+                    const currentProb = homeProb / 100;
+                    const x1 = padding.left;
+                    const x2 = width - padding.right;
+                    const y = padding.top + chartHeight - (currentProb * chartHeight);
+                    minTime = 0;
+                    maxTime = 3600; // Assume 60 minutes (3 periods * 20 minutes) for a full game
+                    timeRange = maxTime - minTime;
+                    points = [
+                        { x: x1, y: y, prob: currentProb, ts: 0 },
+                        { x: x2, y: y, prob: currentProb, ts: maxTime }
+                    ];
+                }
             } else {
                 // Use relative game time (seconds elapsed from game start)
                 // The data should already be in relative time from the backend
@@ -2074,9 +2491,20 @@
                 // If maxTime is greater, it might include overtime
                 // Set a reasonable max for display (e.g., up to 3900 seconds for OT games)
                 const typicalGameTime = 3600; // 3 periods * 20 minutes
-                const maxDisplayTime = Math.max(typicalGameTime, maxTime + 300); // Add buffer
+                let maxDisplayTime = Math.max(typicalGameTime, maxTime + 300); // Add buffer
+                
+                // If we have current game time for live games, ensure it's included in the display
+                if (isLive && currentGameTime !== null && currentGameTime !== undefined) {
+                    maxDisplayTime = Math.max(maxDisplayTime, currentGameTime + 300);
+                }
                 
                 timeRange = maxDisplayTime - minTime || 1;
+                
+                // If we only have 1 point, add a starting point at game start (50/50)
+                if (historyData.length === 1) {
+                    historyData.unshift({ ts: 0, p_home_win: 0.5 });
+                    minTime = 0;
+                }
                 
                 // Interpolate between points to show smoother changes
                 // Add intermediate points every 30 seconds between major events
@@ -2111,23 +2539,69 @@
                 points = interpolatedData.map((d, i) => {
                     const x = padding.left + (d.ts - minTime) / timeRange * chartWidth;
                     const y = padding.top + chartHeight - (d.p_home_win * chartHeight);
-                    return { x, y };
+                    return { x, y, prob: d.p_home_win, ts: d.ts };
                 });
                 
-                // Add current point if it's not already in the data
-                // Check if the last point is close to the current probability
-                const lastDataPoint = interpolatedData[interpolatedData.length - 1];
+                // CRITICAL: Always add current point at the rightmost position (current moment)
+                // This ensures the graph always shows where we are NOW
                 const currentProb = homeProb / 100;
-                const shouldAddCurrentPoint = !lastDataPoint || 
-                    Math.abs(lastDataPoint.p_home_win - currentProb) > 0.01 || 
-                    Math.abs(lastDataPoint.ts - maxTime) > 30;
                 
-                if (shouldAddCurrentPoint) {
-                    // Use maxTime for current point if available, otherwise use the calculated max
-                    const currentX = padding.left + (maxTime - minTime) / timeRange * chartWidth;
-                    const currentY = padding.top + chartHeight - (currentProb * chartHeight);
-                    points.push({ x: currentX, y: currentY });
+                // For live games, use actual current game time if available; otherwise use maxTime from data
+                let currentTime;
+                let needsRecalculation = false;
+                if (isLive && currentGameTime !== null && currentGameTime !== undefined) {
+                    // Use actual current game time (elapsed seconds from game start)
+                    currentTime = currentGameTime;
+                    
+                    // If current time is far less than maxTime from data, the data might be stale
+                    // In that case, use current time as the rightmost point
+                    if (currentTime < maxTime - 1000) {
+                        // Historical data is far in the future (stale prediction), use current time
+                        maxTime = currentTime;
+                        maxDisplayTime = Math.max(typicalGameTime, currentTime + 300);
+                        timeRange = maxDisplayTime - minTime || 1;
+                        needsRecalculation = true;
+                    } else if (currentTime > maxTime) {
+                        // Current time is beyond historical data, extend the range
+                        maxTime = currentTime;
+                        if (currentTime > maxDisplayTime) {
+                            maxDisplayTime = Math.max(typicalGameTime, currentTime + 300);
+                            timeRange = maxDisplayTime - minTime || 1;
+                            needsRecalculation = true;
+                        } else {
+                            timeRange = maxDisplayTime - minTime || 1;
+                        }
+                    } else {
+                        // Current time is within historical data range, use maxTime
+                        timeRange = maxDisplayTime - minTime || 1;
+                    }
+                } else {
+                    // For non-live games or if current time not available, use maxTime from data
+                    currentTime = maxTime;
                 }
+                
+                // If we updated the time range, recalculate all points
+                if (needsRecalculation) {
+                    points = interpolatedData.map((d, i) => {
+                        const x = padding.left + (d.ts - minTime) / timeRange * chartWidth;
+                        const y = padding.top + chartHeight - (d.p_home_win * chartHeight);
+                        return { x, y, prob: d.p_home_win, ts: d.ts };
+                    });
+                }
+                
+                // Add current point at the current moment (rightmost on graph)
+                const currentX = padding.left + (currentTime - minTime) / timeRange * chartWidth;
+                const currentY = padding.top + chartHeight - (currentProb * chartHeight);
+                
+                // Always add/update current point - remove any existing points at or beyond current time
+                // This ensures we always show the current prediction, not stale historical data
+                points = points.filter(p => p.ts < currentTime - 5); // Remove points within 5 seconds of current time
+                
+                // Add current point at the rightmost position
+                points.push({ x: currentX, y: currentY, prob: currentProb, ts: currentTime });
+                
+                // Sort points by time to ensure correct path rendering
+                points.sort((a, b) => a.ts - b.ts);
             }
             
             // Build SVG path
@@ -2186,17 +2660,35 @@
             // Get the last point for the circle
             const lastPoint = points[points.length - 1];
             
+            // CRITICAL: Calculate displayed percentages from the actual graph's last point
+            // This ensures the displayed numbers match where the graph is at this moment
+            let displayHomeProb, displayAwayProb;
+            if (lastPoint && lastPoint.prob !== undefined) {
+                // Use the probability from the last point on the graph (most accurate)
+                displayHomeProb = (lastPoint.prob * 100).toFixed(2);
+                displayAwayProb = ((1 - lastPoint.prob) * 100).toFixed(2);
+            } else if (lastPoint && historyData && historyData.length > 0) {
+                // Fallback: Use the last historical data point's probability
+                const lastDataPoint = historyData[historyData.length - 1];
+                displayHomeProb = (lastDataPoint.p_home_win * 100).toFixed(2);
+                displayAwayProb = ((1 - lastDataPoint.p_home_win) * 100).toFixed(2);
+            } else {
+                // Final fallback: Use provided probabilities if no historical data
+                displayHomeProb = parseFloat(homeProb).toFixed(2);
+                displayAwayProb = parseFloat(awayProb).toFixed(2);
+            }
+            
             return `
                 <div class="win-prob-graph-container">
                     <div class="win-prob-graph-labels">
                         <div class="win-prob-graph-team-left">
                             ${awayLogo ? `<img src="${awayLogo}" alt="${awayTeam}" class="win-prob-graph-logo" onerror="this.style.display='none'">` : ''}
-                            <span class="win-prob-graph-percentage">${awayProb.toFixed(1)}%</span>
+                            <span class="win-prob-graph-percentage">${displayAwayProb}%</span>
                             <span class="win-prob-graph-abbrev">-- ${awayAbbrevDisplay}</span>
                         </div>
                         <div class="win-prob-graph-team-right">
                             <span class="win-prob-graph-abbrev">${homeAbbrevDisplay} --</span>
-                            <span class="win-prob-graph-percentage">${homeProb.toFixed(1)}%</span>
+                            <span class="win-prob-graph-percentage">${displayHomeProb}%</span>
                             ${homeLogo ? `<img src="${homeLogo}" alt="${homeTeam}" class="win-prob-graph-logo" onerror="this.style.display='none'">` : ''}
                         </div>
                     </div>
@@ -2287,6 +2779,9 @@
             
             container.innerHTML = '<div class="spinner"></div>';
             
+            // Load team colors first
+            await loadTeamColors();
+            
             try {
                 const response = await fetch(`${API_BASE}/v1/games/${gameId}/stats`);
                 const data = await response.json();
@@ -2298,11 +2793,15 @@
                     
                     // Function to create a stat row with bar graph
                     // Away team on LEFT, Home team on RIGHT
-                    function createStatRow(statName, homeValue, awayValue, displayName = null, homeLogo = '', awayLogo = '') {
+                    function createStatRow(statName, homeValue, awayValue, displayName = null, homeLogo = '', awayLogo = '', homeAbbrev = '', awayAbbrev = '') {
                         const total = homeValue + awayValue;
                         const homePercent = total > 0 ? (homeValue / total * 100) : 50;
                         const awayPercent = total > 0 ? (awayValue / total * 100) : 50;
                         const label = displayName || statName.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                        
+                        // Get secondary colors for teams (convert to uppercase to match JSON keys)
+                        const homeColor = teamColors[homeAbbrev?.toUpperCase()] || '#444'; // Fallback to default
+                        const awayColor = teamColors[awayAbbrev?.toUpperCase()] || '#0066cc'; // Fallback to default
                         
                         return `
                             <div class="stat-row">
@@ -2316,8 +2815,8 @@
                                     ${homeLogo ? `<img src="${homeLogo}" alt="Home" class="stat-team-logo" onerror="this.style.display='none'">` : ''}
                                 </div>
                                 <div class="stat-bar-container">
-                                    <div class="stat-bar stat-bar-away" style="width: ${awayPercent}%"></div>
-                                    <div class="stat-bar stat-bar-home" style="width: ${homePercent}%"></div>
+                                    <div class="stat-bar stat-bar-away" style="width: ${awayPercent}%; background-color: ${awayColor}"></div>
+                                    <div class="stat-bar stat-bar-home" style="width: ${homePercent}%; background-color: ${homeColor}"></div>
                                 </div>
                             </div>
                         `;
@@ -2328,15 +2827,15 @@
                             <h2>Head-to-head</h2>
                         </div>
                         <div class="game-stats-body">
-                            ${createStatRow('shots', stats.shots.home, stats.shots.away, 'Shots', homeTeam.logo, awayTeam.logo)}
-                            ${createStatRow('hits', stats.hits.home, stats.hits.away, 'Hits', homeTeam.logo, awayTeam.logo)}
-                            ${createStatRow('faceoff_win_pct', stats.faceoff_win_pct.home, stats.faceoff_win_pct.away, 'Face-off win %', homeTeam.logo, awayTeam.logo)}
-                            ${createStatRow('penalty_minutes', stats.penalty_minutes.home, stats.penalty_minutes.away, 'Penalty minutes', homeTeam.logo, awayTeam.logo)}
-                            ${createStatRow('power_play_pct', stats.power_play_pct.home, stats.power_play_pct.away, 'Power play %', homeTeam.logo, awayTeam.logo)}
-                            ${createStatRow('power_play_opportunities', stats.power_play_opportunities.home, stats.power_play_opportunities.away, 'Power play opportunities', homeTeam.logo, awayTeam.logo)}
-                            ${createStatRow('blocked_shots', stats.blocked_shots.home, stats.blocked_shots.away, 'Blocked shots', homeTeam.logo, awayTeam.logo)}
-                            ${createStatRow('takeaways', stats.takeaways.home, stats.takeaways.away, 'Takeaways', homeTeam.logo, awayTeam.logo)}
-                            ${createStatRow('giveaways', stats.giveaways.home, stats.giveaways.away, 'Giveaways', homeTeam.logo, awayTeam.logo)}
+                            ${createStatRow('shots', stats.shots.home, stats.shots.away, 'Shots', homeTeam.logo, awayTeam.logo, homeTeam.abbrev || '', awayTeam.abbrev || '')}
+                            ${createStatRow('hits', stats.hits.home, stats.hits.away, 'Hits', homeTeam.logo, awayTeam.logo, homeTeam.abbrev || '', awayTeam.abbrev || '')}
+                            ${createStatRow('faceoff_win_pct', stats.faceoff_win_pct.home, stats.faceoff_win_pct.away, 'Face-off win %', homeTeam.logo, awayTeam.logo, homeTeam.abbrev || '', awayTeam.abbrev || '')}
+                            ${createStatRow('penalty_minutes', stats.penalty_minutes.home, stats.penalty_minutes.away, 'Penalty minutes', homeTeam.logo, awayTeam.logo, homeTeam.abbrev || '', awayTeam.abbrev || '')}
+                            ${createStatRow('power_play_pct', stats.power_play_pct.home, stats.power_play_pct.away, 'Power play %', homeTeam.logo, awayTeam.logo, homeTeam.abbrev || '', awayTeam.abbrev || '')}
+                            ${createStatRow('power_play_opportunities', stats.power_play_opportunities.home, stats.power_play_opportunities.away, 'Power play opportunities', homeTeam.logo, awayTeam.logo, homeTeam.abbrev || '', awayTeam.abbrev || '')}
+                            ${createStatRow('blocked_shots', stats.blocked_shots.home, stats.blocked_shots.away, 'Blocked shots', homeTeam.logo, awayTeam.logo, homeTeam.abbrev || '', awayTeam.abbrev || '')}
+                            ${createStatRow('takeaways', stats.takeaways.home, stats.takeaways.away, 'Takeaways', homeTeam.logo, awayTeam.logo, homeTeam.abbrev || '', awayTeam.abbrev || '')}
+                            ${createStatRow('giveaways', stats.giveaways.home, stats.giveaways.away, 'Giveaways', homeTeam.logo, awayTeam.logo, homeTeam.abbrev || '', awayTeam.abbrev || '')}
                         </div>
                     `;
                 } else {
@@ -2808,17 +3307,14 @@
                 homeLogo = cached.homeLogo || homeLogo;
                 awayLogo = cached.awayLogo || awayLogo;
                 
-                                // Render cached events immediately
-                                const cachedIsLive = cached.isLive !== undefined ? cached.isLive : isLive;
-                                renderFeedEvents(cached.events, homeTeam, awayTeam, homeLogo, awayLogo, cachedIsLive, gameId, cached.gameState);
+                // Render cached events immediately
+                const cachedIsLive = cached.isLive !== undefined ? cached.isLive : isLive;
+                renderFeedEvents(cached.events, homeTeam, awayTeam, homeLogo, awayLogo, cachedIsLive, gameId, cached.gameState);
                 useCache = true;
-            }
-            
-            // Always fetch fresh data in background to ensure it's up-to-date
-            updateGameFeedCache(gameId);
-            
-            // If we didn't use cache, load normally
-            if (!useCache) {
+                
+                // Don't call updateGameFeedCache here - let startGameFeedPolling handle it
+                // This prevents duplicate/conflicting updates
+            } else {
                 // No cached data, load normally
                 // Load power play status
                 loadPowerPlayStatus(gameId);
@@ -2829,10 +3325,23 @@
                 }
 
                 try {
-                    const response = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=50`);
+                    // Add timeout to fetch request (15 seconds)
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 15000);
+                    
+                    const response = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=50`, {
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+                    
                     if (!response.ok) {
                         console.error(`[Feed] Failed to load play-by-play: ${response.status}`);
-                        feed.innerHTML = '<div style="color: #ee8888; text-align: center; padding: 40px;">Error loading play-by-play data</div>';
+                        const errorMsg = response.status === 404 
+                            ? 'Game not found. Please check the game ID.'
+                            : response.status === 500
+                            ? 'Server error. Please try again later.'
+                            : `Error loading play-by-play data (${response.status})`;
+                        feed.innerHTML = `<div style="color: #ee8888; text-align: center; padding: 40px;">${errorMsg}</div>`;
                         return;
                     }
                     
@@ -2877,7 +3386,18 @@
                         // Polling is already started by startGameFeedPolling above
                     }
                 } catch (error) {
-                    feed.innerHTML = `<div style="color: #ee8888; text-align: center; padding: 40px;">Error: ${error.message}</div>`;
+                    let errorMsg = 'Error loading play-by-play data';
+                    if (error.name === 'AbortError') {
+                        errorMsg = 'Request timed out. This could be a connection issue. Please check your internet connection and try again.';
+                        console.error(`[Feed] Timeout loading play-by-play for ${gameId}`);
+                    } else if (error.message.includes('fetch')) {
+                        errorMsg = 'Network error. Please check your internet connection and try again.';
+                        console.error(`[Feed] Network error loading play-by-play for ${gameId}:`, error);
+                    } else {
+                        console.error(`[Feed] Error loading play-by-play for ${gameId}:`, error);
+                        errorMsg = `Error: ${error.message || 'Unknown error'}`;
+                    }
+                    feed.innerHTML = `<div style="color: #ee8888; text-align: center; padding: 40px;">${errorMsg}</div>`;
                     // Polling is already started by startGameFeedPolling above
                 }
             }

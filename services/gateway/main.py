@@ -9,7 +9,7 @@ from datetime import datetime
 
 import httpx
 import psycopg
-from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -83,7 +83,7 @@ async def get_team_colors_static():
         return FileResponse(team_colors_path, media_type="application/json")
     else:
         logger.error(f"[TEAM_COLORS_STATIC] Team colors file not found at: {team_colors_path}")
-        raise HTTPException(status_code=404, detail=f"Team colors file not found")
+        raise HTTPException(status_code=404, detail="Team colors file not found")
 
 # Now mount static files (this will handle other static files like CSS, JS, etc.)
 if os.path.exists(static_dir):
@@ -224,6 +224,26 @@ def calculate_strength(home_skaters: int, away_skaters: int) -> tuple[str, str]:
         away_strength = "EV"
     
     return (home_strength, away_strength)
+
+def format_strength_label(strength: str, empty_net: bool) -> str:
+    """
+    Format strength label for goal descriptions.
+    
+    Args:
+        strength: Strength code ("PP", "PK", "SH", "EV", "EN", "ENPP", "ENPK")
+        empty_net: Whether this is an empty net situation
+    
+    Returns:
+        Formatted strength label string (e.g., "power-play ", "shorthanded ", or "")
+    """
+    # Only label as power-play if the scoring team is on the power play (PP) and NOT empty net
+    if strength == "PP" and not empty_net:
+        return "power-play "
+    # Only label as shorthanded if the scoring team is shorthanded (PK/SH) and NOT empty net
+    elif (strength == "PK") and not empty_net:
+        return "shorthanded "
+    # No label for even strength, empty net, or other situations
+    return ""
 
 async def fetch_team_standings(redis: Redis = None) -> dict:
     """Fetch team standings/records from NHL API and cache in Redis.
@@ -1427,6 +1447,7 @@ async def get_winprob_history(game_id: str):
     try:
         # Calculate current game time first (for live games)
         current_game_time = None
+        game_data = None  # Cache game data to avoid duplicate fetches
         try:
             game_data = await fetch_nhl_play_by_play(game_id)
             if game_data:
@@ -1450,8 +1471,9 @@ async def get_winprob_history(game_id: str):
             from fastapi.responses import JSONResponse
             return JSONResponse(content={"game_id": game_id, "data": [], "current_game_time": current_game_time})
         
-        # Get game start time from NHL API to calculate relative time
-        game_data = await fetch_nhl_play_by_play(game_id)
+        # Get game start time from NHL API (reuse cached game_data if available)
+        if not game_data:
+            game_data = await fetch_nhl_play_by_play(game_id)
         game_start_ts = None
         if game_data:
             game_start_str = game_data.get("startTimeUTC", "")
@@ -1463,66 +1485,80 @@ async def get_winprob_history(game_id: str):
                 except Exception:
                     pass
         
-        async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    """
-                    SELECT ts, p_home_win 
-                    FROM predictions 
-                    WHERE game_id = %s 
-                    ORDER BY ts ASC
-                    """,
-                    (game_id,)
-                )
-                rows = await cur.fetchall()
-                
-                # Calculate relative time (seconds elapsed from game start)
-                data = []
-                for ts, p_home_win in rows:
-                    # ts is a datetime object from PostgreSQL
-                    ts_timestamp = ts.timestamp() if hasattr(ts, 'timestamp') else float(ts)
+        # Add timeout to database connection to prevent hanging
+        try:
+            conn = await asyncio.wait_for(
+                psycopg.AsyncConnection.connect(DATABASE_URL),
+                timeout=5.0  # 5 second timeout for database connection
+            )
+            async with conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """
+                        SELECT ts, p_home_win 
+                        FROM predictions 
+                        WHERE game_id = %s 
+                        ORDER BY ts ASC
+                        """,
+                        (game_id,)
+                    )
+                    rows = await cur.fetchall()
                     
-                    # If we have game start time, calculate relative time
-                    if game_start_ts:
-                        relative_time = float(ts_timestamp) - game_start_ts
-                        # Only include positive relative times (after game start)
-                        # Also filter out unreasonable times (e.g., negative or way too large)
-                        if relative_time >= 0 and relative_time < 14400:  # Max 4 hours (240 minutes)
-                            data.append({"ts": relative_time, "p_home_win": float(p_home_win)})
-                    else:
-                        # Fallback: assume ts is already relative time (for backwards compatibility)
-                        # If ts is a timestamp that looks like it's from 1970, it's probably relative time
-                        if ts_timestamp < 1000000:  # Less than ~11 days after epoch, probably relative time
-                            if ts_timestamp >= 0 and ts_timestamp < 14400:  # Max 4 hours
-                                data.append({"ts": ts_timestamp, "p_home_win": float(p_home_win)})
+                    # Calculate relative time (seconds elapsed from game start)
+                    data = []
+                    for ts, p_home_win in rows:
+                        # ts is a datetime object from PostgreSQL
+                        ts_timestamp = ts.timestamp() if hasattr(ts, 'timestamp') else float(ts)
+                        
+                        # If we have game start time, calculate relative time
+                        if game_start_ts:
+                            relative_time = float(ts_timestamp) - game_start_ts
+                            # Only include positive relative times (after game start)
+                            # Also filter out unreasonable times (e.g., negative or way too large)
+                            if relative_time >= 0 and relative_time < 14400:  # Max 4 hours (240 minutes)
+                                data.append({"ts": relative_time, "p_home_win": float(p_home_win)})
                         else:
-                            # It's an absolute timestamp but we don't have game start
-                            # Try to calculate relative time using current time as approximation
-                            import time
-                            current_ts = time.time()
-                            # If prediction is recent (within last 4 hours), estimate relative time
-                            if ts_timestamp > current_ts - 14400:
-                                # Estimate relative time (this is approximate)
-                                estimated_relative = ts_timestamp - (current_ts - 3600)  # Assume game started 1 hour ago
-                                if estimated_relative >= 0 and estimated_relative < 14400:
-                                    data.append({"ts": estimated_relative, "p_home_win": float(p_home_win)})
-                
-                # Sort by time to ensure correct order
-                data.sort(key=lambda x: x["ts"])
-                
-                # current_game_time was already calculated above, use it
-                import sys
-                print(f"[gateway] get_winprob_history: current_game_time = {current_game_time}, data length = {len(data)}", file=sys.stderr, flush=True)
-                from fastapi.responses import JSONResponse
-                response_content = {
-                    "game_id": game_id,
-                    "data": data,
-                    "current_game_time": current_game_time if current_game_time is not None else 0  # Elapsed seconds from game start (for live games), 0 if not live
-                }
-                print(f"[gateway] get_winprob_history: Returning response with keys: {list(response_content.keys())}", file=sys.stderr, flush=True)
-                return JSONResponse(content=response_content)
+                            # Fallback: assume ts is already relative time (for backwards compatibility)
+                            # If ts is a timestamp that looks like it's from 1970, it's probably relative time
+                            if ts_timestamp < 1000000:  # Less than ~11 days after epoch, probably relative time
+                                if ts_timestamp >= 0 and ts_timestamp < 14400:  # Max 4 hours
+                                    data.append({"ts": ts_timestamp, "p_home_win": float(p_home_win)})
+                            else:
+                                # It's an absolute timestamp but we don't have game start
+                                # Try to calculate relative time using current time as approximation
+                                import time
+                                current_ts = time.time()
+                                # If prediction is recent (within last 4 hours), estimate relative time
+                                if ts_timestamp > current_ts - 14400:
+                                    # Estimate relative time (this is approximate)
+                                    estimated_relative = ts_timestamp - (current_ts - 3600)  # Assume game started 1 hour ago
+                                    if estimated_relative >= 0 and estimated_relative < 14400:
+                                        data.append({"ts": estimated_relative, "p_home_win": float(p_home_win)})
+                    
+                    # Sort by time to ensure correct order
+                    data.sort(key=lambda x: x["ts"])
+                    
+                    # current_game_time was already calculated above, use it
+                    import sys
+                    print(f"[gateway] get_winprob_history: current_game_time = {current_game_time}, data length = {len(data)}", file=sys.stderr, flush=True)
+                    from fastapi.responses import JSONResponse
+                    response_content = {
+                        "game_id": game_id,
+                        "data": data,
+                        "current_game_time": current_game_time if current_game_time is not None else 0  # Elapsed seconds from game start (for live games), 0 if not live
+                    }
+                    print(f"[gateway] get_winprob_history: Returning response with keys: {list(response_content.keys())}", file=sys.stderr, flush=True)
+                    return JSONResponse(content=response_content)
+        except asyncio.TimeoutError:
+            logger.warning(f"[gateway] Database connection timeout for game {game_id}, returning empty data")
+            from fastapi.responses import JSONResponse
+            return JSONResponse(content={"game_id": game_id, "data": [], "current_game_time": current_game_time})
+        except Exception as db_error:
+            logger.error(f"[gateway] Database error for game {game_id}: {db_error}")
+            from fastapi.responses import JSONResponse
+            return JSONResponse(content={"game_id": game_id, "data": [], "current_game_time": current_game_time})
     except Exception as e:
-        print(f"[gateway] Error fetching win probability history: {e}")
+        logger.error(f"[gateway] Error fetching win probability history: {e}")
         import traceback
         traceback.print_exc()
         # Return empty data but still try to get current_game_time
@@ -2879,6 +2915,7 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                                 pass  # Will fall through to fetch fresh data
                             else:
                                 # Cache is fresh (< 5 seconds old), return it and refresh in background
+                                logger.info(f"[gateway] Background refresh triggered for game {game_id} (cache age: {age:.2f}s)")
                                 asyncio.create_task(_refresh_playbyplay_cache(game_id, r))
                                 from fastapi.responses import JSONResponse
                                 response = JSONResponse(content=cached_data)
@@ -3029,183 +3066,184 @@ async def get_playbyplay(game_id: str, limit: int = 30):
         
         # Process events in chronological order (they're already sorted by the API)
         for play in processed_plays:
-            type_code = play.get("typeCode")
-            mapped_type = type_mapping.get(type_code, "SHOT")
-            details = play.get("details", {})
+            try:
+                type_code = play.get("typeCode")
+                mapped_type = type_mapping.get(type_code, "SHOT")
+                details = play.get("details", {})
+                
+                # Determine team
+                event_owner_id = details.get("eventOwnerTeamId")
+                if event_owner_id == home_team_id:
+                    team = "HOME"
+                elif event_owner_id == away_team_id:
+                    team = "AWAY"
+                else:
+                    # For goals, never use defending side fallback (defending team is the one that got scored on)
+                    # Goals are crucial events and should always have eventOwnerTeamId
+                    if mapped_type == "GOAL":
+                        # For goals, use the scoring team - if homeTeamDefendingSide is "right", 
+                        # home is defending, so away scored (opposite of defending)
+                        print(f"[gateway] WARNING: Goal missing eventOwnerTeamId for game {game_id}, using scoring team logic")
+                        team = "AWAY" if play.get("homeTeamDefendingSide") == "right" else "HOME"
+                    else:
+                        # For non-crucial events, fallback to defending side if eventOwnerTeamId not available
+                        team = "HOME" if play.get("homeTeamDefendingSide") == "right" else "AWAY"
+                
+                # Get player info
+                player_id = None
+                assist1_player_id = None
+                assist2_player_id = None
+                assist1_name = None
+                assist2_name = None
+                player_headshot = None
             
-            # Determine team
-            event_owner_id = details.get("eventOwnerTeamId")
-            if event_owner_id == home_team_id:
-                team = "HOME"
-            elif event_owner_id == away_team_id:
-                team = "AWAY"
-            else:
-                # For goals, never use defending side fallback (defending team is the one that got scored on)
-                # Goals are crucial events and should always have eventOwnerTeamId
                 if mapped_type == "GOAL":
-                    # For goals, use the scoring team - if homeTeamDefendingSide is "right", 
-                    # home is defending, so away scored (opposite of defending)
-                    print(f"[gateway] WARNING: Goal missing eventOwnerTeamId for game {game_id}, using scoring team logic")
-                    team = "AWAY" if play.get("homeTeamDefendingSide") == "right" else "HOME"
-                else:
-                    # For non-crucial events, fallback to defending side if eventOwnerTeamId not available
-                    team = "HOME" if play.get("homeTeamDefendingSide") == "right" else "AWAY"
-            
-            # Get player info
-            player_id = None
-            assist1_player_id = None
-            assist2_player_id = None
-            assist1_name = None
-            assist2_name = None
-            player_headshot = None
-            
-            if mapped_type == "GOAL":
-                player_id = details.get("scoringPlayerId")
-                assist1_player_id = details.get("assist1PlayerId")
-                assist2_player_id = details.get("assist2PlayerId")
-                # Get player names and headshots from batch lookup
-                player_name = player_names.get(player_id) if player_id else None
-                player_headshot = player_headshots.get(player_id) if player_id else None
-                assist1_name = player_names.get(assist1_player_id) if assist1_player_id else None
-                assist2_name = player_names.get(assist2_player_id) if assist2_player_id else None
-                
-                # If batch lookup returned None, try individual fetch
-                if player_id and not player_name:
-                    player_name = await get_player_name(player_id, r)
-                if player_id and not player_headshot:
-                    player_headshot = await get_player_headshot(player_id, r)
-                if assist1_player_id and not assist1_name:
-                    assist1_name = await get_player_name(assist1_player_id, r)
-                if assist2_player_id and not assist2_name:
-                    assist2_name = await get_player_name(assist2_player_id, r)
-                    
-            elif mapped_type == "PENALTY":
-                player_id = details.get("committedByPlayerId")
-                desc_key = details.get("descKey", "").lower()  # Get desc_key early for bench penalty check
-                
-                # Check if this is a bench penalty (no player assigned or explicitly a bench penalty)
-                is_bench_penalty = False
-                if not player_id or player_id == 0:
-                    # No player assigned - this is a bench penalty
-                    is_bench_penalty = True
-                elif "bench" in desc_key:
-                    # Explicitly a bench penalty (e.g., "bench minor")
-                    is_bench_penalty = True
-                
-                if is_bench_penalty:
-                    # Use full team name and team logo for bench penalties
-                    player_id = None  # Clear player_id for bench penalties
-                    player_name = home_team_full if team == "HOME" else away_team_full
-                    player_headshot = home_team_logo if team == "HOME" else away_team_logo
-                else:
-                    # Regular penalty - fetch player info
+                    player_id = details.get("scoringPlayerId")
+                    assist1_player_id = details.get("assist1PlayerId")
+                    assist2_player_id = details.get("assist2PlayerId")
+                    # Get player names and headshots from batch lookup
                     player_name = player_names.get(player_id) if player_id else None
                     player_headshot = player_headshots.get(player_id) if player_id else None
+                    assist1_name = player_names.get(assist1_player_id) if assist1_player_id else None
+                    assist2_name = player_names.get(assist2_player_id) if assist2_player_id else None
+                    
+                    # If batch lookup returned None, try individual fetch
                     if player_id and not player_name:
                         player_name = await get_player_name(player_id, r)
                     if player_id and not player_headshot:
                         player_headshot = await get_player_headshot(player_id, r)
-            elif mapped_type in ["SHOT", "BLOCK", "HIT", "FACEOFF", "GIVEAWAY", "TAKEAWAY"]:
-                # Extract player ID based on event type
-                if mapped_type == "SHOT":
-                    player_id = details.get("shootingPlayerId")
-                elif mapped_type == "BLOCK":
-                    # For blocked shots, the blocking player is the main player (event owner)
-                    # The shooting player will be handled separately in the description
-                    player_id = details.get("playerId") or details.get("blockingPlayerId") or details.get("shootingPlayerId")
-                elif mapped_type == "HIT":
-                    player_id = details.get("hittingPlayerId")
-                elif mapped_type == "FACEOFF":
-                    player_id = details.get("winningPlayerId")
-                elif mapped_type in ["GIVEAWAY", "TAKEAWAY"]:
-                    player_id = details.get("playerId")
-                
-                # For these event types, fetch player info from batch lookup
-                player_name = player_names.get(player_id) if player_id else None
-                player_headshot = player_headshots.get(player_id) if player_id else None
-                # Fallback to individual fetch if batch lookup failed
-                if player_id and not player_name:
-                    player_name = await get_player_name(player_id, r)
-                if player_id and not player_headshot:
-                    player_headshot = await get_player_headshot(player_id, r)
-            else:
-                player_name = None
-                player_headshot = None
+                    if assist1_player_id and not assist1_name:
+                        assist1_name = await get_player_name(assist1_player_id, r)
+                    if assist2_player_id and not assist2_name:
+                        assist2_name = await get_player_name(assist2_player_id, r)
+                    
+                elif mapped_type == "PENALTY":
+                    player_id = details.get("committedByPlayerId")
+                    desc_key = details.get("descKey", "").lower()  # Get desc_key early for bench penalty check
+                    
+                    # Check if this is a bench penalty (no player assigned or explicitly a bench penalty)
+                    is_bench_penalty = False
+                    if not player_id or player_id == 0:
+                        # No player assigned - this is a bench penalty
+                        is_bench_penalty = True
+                    elif "bench" in desc_key:
+                        # Explicitly a bench penalty (e.g., "bench minor")
+                        is_bench_penalty = True
+                    
+                    if is_bench_penalty:
+                        # Use full team name and team logo for bench penalties
+                        player_id = None  # Clear player_id for bench penalties
+                        player_name = home_team_full if team == "HOME" else away_team_full
+                        player_headshot = home_team_logo if team == "HOME" else away_team_logo
+                    else:
+                        # Regular penalty - fetch player info
+                        player_name = player_names.get(player_id) if player_id else None
+                        player_headshot = player_headshots.get(player_id) if player_id else None
+                        if player_id and not player_name:
+                            player_name = await get_player_name(player_id, r)
+                        if player_id and not player_headshot:
+                            player_headshot = await get_player_headshot(player_id, r)
+                elif mapped_type in ["SHOT", "BLOCK", "HIT", "FACEOFF", "GIVEAWAY", "TAKEAWAY"]:
+                    # Extract player ID based on event type
+                    if mapped_type == "SHOT":
+                        player_id = details.get("shootingPlayerId")
+                    elif mapped_type == "BLOCK":
+                        # For blocked shots, the blocking player is the main player (event owner)
+                        # The shooting player will be handled separately in the description
+                        player_id = details.get("playerId") or details.get("blockingPlayerId") or details.get("shootingPlayerId")
+                    elif mapped_type == "HIT":
+                        player_id = details.get("hittingPlayerId")
+                    elif mapped_type == "FACEOFF":
+                        player_id = details.get("winningPlayerId")
+                    elif mapped_type in ["GIVEAWAY", "TAKEAWAY"]:
+                        player_id = details.get("playerId")
+                    
+                    # For these event types, fetch player info from batch lookup
+                    player_name = player_names.get(player_id) if player_id else None
+                    player_headshot = player_headshots.get(player_id) if player_id else None
+                    # Fallback to individual fetch if batch lookup failed
+                    if player_id and not player_name:
+                        player_name = await get_player_name(player_id, r)
+                    if player_id and not player_headshot:
+                        player_headshot = await get_player_headshot(player_id, r)
+                else:
+                    player_name = None
+                    player_headshot = None
             
-            # Check if NHL API provides direct strength information on goal events
-            # Some NHL API implementations provide direct strength fields (e.g., "PPG", "SHG", "EVEN")
-            # Check both the play object and details object for strength information
-            strength_from_api = None
-            if mapped_type == "GOAL":
-                # Check play-level strength field
-                strength_from_api = play.get("strength") or play.get("strengthCode") or play.get("strengthState")
-                # Check details-level strength field
-                if not strength_from_api:
-                    strength_from_api = details.get("strength") or details.get("strengthCode") or details.get("strengthState")
-                # Check for powerPlay or shortHanded boolean flags
-                if not strength_from_api:
-                    is_power_play = details.get("powerPlay") or details.get("isPowerPlay")
-                    is_shorthanded = details.get("shortHanded") or details.get("isShortHanded") or details.get("shorthanded")
-                    if is_power_play:
-                        strength_from_api = "PPG"
-                    elif is_shorthanded:
-                        strength_from_api = "SHG"
+                # Check if NHL API provides direct strength information on goal events
+                # Some NHL API implementations provide direct strength fields (e.g., "PPG", "SHG", "EVEN")
+                # Check both the play object and details object for strength information
+                strength_from_api = None
+                if mapped_type == "GOAL":
+                    # Check play-level strength field
+                    strength_from_api = play.get("strength") or play.get("strengthCode") or play.get("strengthState")
+                    # Check details-level strength field
+                    if not strength_from_api:
+                        strength_from_api = details.get("strength") or details.get("strengthCode") or details.get("strengthState")
+                    # Check for powerPlay or shortHanded boolean flags
+                    if not strength_from_api:
+                        is_power_play = details.get("powerPlay") or details.get("isPowerPlay")
+                        is_shorthanded = details.get("shortHanded") or details.get("isShortHanded") or details.get("shorthanded")
+                        if is_power_play:
+                            strength_from_api = "PPG"
+                        elif is_shorthanded:
+                            strength_from_api = "SHG"
             
-            # Get strength situation
-            # situationCode format: "ABCD" where:
-            # A = away goalie (0 or 1)
-            # B = away skaters (0-6) - Position 1 = AWAY skaters
-            # C = home goalie (0 or 1)
-            # D = home skaters (0-6) - Position 3 = HOME skaters
-            # Example: "1551" = away goalie present, 5 away skaters, home goalie present, 1 home skater
-            # BUT: For 5v5, situationCode should be "1555" (both teams have 5 skaters)
-            situation = play.get("situationCode", "1555")
-            # Ensure we have at least 4 characters
-            if len(situation) >= 4:
-                try:
-                    # Standard interpretation: position 1 = away skaters, position 3 = home skaters
-                    away_skaters = int(situation[1])  # Position 1 (second character) = AWAY skaters
-                    home_skaters = int(situation[3])  # Position 3 (fourth character) = HOME skaters
-                except (ValueError, IndexError):
-                    # If parsing fails, assume even strength
+                # Get strength situation
+                # situationCode format: "ABCD" where:
+                # A = away goalie (0 or 1)
+                # B = away skaters (0-6) - Position 1 = AWAY skaters
+                # C = home goalie (0 or 1)
+                # D = home skaters (0-6) - Position 3 = HOME skaters
+                # Example: "1551" = away goalie present, 5 away skaters, home goalie present, 1 home skater
+                # BUT: For 5v5, situationCode should be "1555" (both teams have 5 skaters)
+                situation = play.get("situationCode", "1555")
+                # Ensure we have at least 4 characters
+                if len(situation) >= 4:
+                    try:
+                        # Standard interpretation: position 1 = away skaters, position 3 = home skaters
+                        away_skaters = int(situation[1])  # Position 1 (second character) = AWAY skaters
+                        home_skaters = int(situation[3])  # Position 3 (fourth character) = HOME skaters
+                    except (ValueError, IndexError):
+                        # If parsing fails, assume even strength
+                        away_skaters = 5
+                        home_skaters = 5
+                else:
+                    # Fallback: assume even strength 5v5
                     away_skaters = 5
                     home_skaters = 5
-            else:
-                # Fallback: assume even strength 5v5
-                away_skaters = 5
-                home_skaters = 5
             
-            # Debug: Log situationCode parsing and check for direct strength field
-            # Log the full situationCode to help diagnose parsing issues
-            # Also log the raw character positions to see what we're actually reading
-            print(f"[gateway] DEBUG: Parsing situationCode='{situation}' -> pos[0]={situation[0] if len(situation) > 0 else 'N/A'}, pos[1]={situation[1] if len(situation) > 1 else 'N/A'}, pos[2]={situation[2] if len(situation) > 2 else 'N/A'}, pos[3]={situation[3] if len(situation) > 3 else 'N/A'} -> home_skaters={home_skaters}, away_skaters={away_skaters}, team={team}")
+                # Debug: Log situationCode parsing and check for direct strength field
+                # Log the full situationCode to help diagnose parsing issues
+                # Also log the raw character positions to see what we're actually reading
+                print(f"[gateway] DEBUG: Parsing situationCode='{situation}' -> pos[0]={situation[0] if len(situation) > 0 else 'N/A'}, pos[1]={situation[1] if len(situation) > 1 else 'N/A'}, pos[2]={situation[2] if len(situation) > 2 else 'N/A'}, pos[3]={situation[3] if len(situation) > 3 else 'N/A'} -> home_skaters={home_skaters}, away_skaters={away_skaters}, team={team}")
             
-            # If we don't have direct strength from API, calculate from situationCode
-            if not strength_from_api or mapped_type != "GOAL":
-                # Determine if empty net (goalie pulled - 6 skaters, or goalie pulled - 0 skaters)
-                # Note: Empty net means a team has 6 skaters (goalie pulled for extra attacker)
-                # or 0 skaters (goalie pulled, but this shouldn't happen for the scoring team)
-                empty_net = (away_skaters == 6 or home_skaters == 6)
-            
-                # Determine strength from the scoring team's perspective
-                # Power play = scoring team has MORE skaters than opponent (advantage)
-                # Shorthanded = scoring team has FEWER skaters than opponent (< 5 skaters)
-                # Even strength = both teams have 5 skaters
-                # 
-                # Important: Only label as PP/SH if there's a clear advantage/disadvantage
-                # Don't label as PP/SH if it's just an empty net situation (6v5)
-                if team == "HOME":
-                    if empty_net:
-                        if home_skaters == 6:
-                            # Home has empty net (6 skaters, goalie pulled)
-                            # This is an empty net goal, label as PP only if opponent is shorthanded
-                            strength = "ENPP" if away_skaters < 5 else "EN"
-                        elif away_skaters == 6:
-                            # Away has empty net (6 skaters, goalie pulled)
-                            # Home is defending against empty net - this is a defensive situation
-                            strength = "PK"
-                        else:
-                            strength = "EV"
+                # If we don't have direct strength from API, calculate from situationCode
+                if not strength_from_api or mapped_type != "GOAL":
+                    # Determine if empty net (goalie pulled - 6 skaters, or goalie pulled - 0 skaters)
+                    # Note: Empty net means a team has 6 skaters (goalie pulled for extra attacker)
+                    # or 0 skaters (goalie pulled, but this shouldn't happen for the scoring team)
+                    empty_net = (away_skaters == 6 or home_skaters == 6)
+                    
+                    # Determine strength from the scoring team's perspective
+                    # Power play = scoring team has MORE skaters than opponent (advantage)
+                    # Shorthanded = scoring team has FEWER skaters than opponent (< 5 skaters)
+                    # Even strength = both teams have 5 skaters
+                    # 
+                    # Important: Only label as PP/SH if there's a clear advantage/disadvantage
+                    # Don't label as PP/SH if it's just an empty net situation (6v5)
+                    if team == "HOME":
+                        if empty_net:
+                            if home_skaters == 6:
+                                # Home has empty net (6 skaters, goalie pulled)
+                                # This is an empty net goal, label as PP only if opponent is shorthanded
+                                strength = "ENPP" if away_skaters < 5 else "EN"
+                            elif away_skaters == 6:
+                                # Away has empty net (6 skaters, goalie pulled)
+                                # Home is defending against empty net - this is a defensive situation
+                                strength = "PK"
+                            else:
+                                strength = "EV"
                     elif home_skaters == 5 and away_skaters == 5:
                         strength = "EV"
                     elif home_skaters > away_skaters:
@@ -3225,149 +3263,155 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                         else:
                             # Invalid situation (e.g., 1v5, 2v5) - assume even strength
                             strength = "EV"
+                    else:  # AWAY team scored
+                        if empty_net:
+                            if away_skaters == 6:
+                                # Away has empty net (6 skaters, goalie pulled)
+                                # This is an empty net goal, label as PP only if opponent is shorthanded
+                                strength = "ENPP" if home_skaters < 5 else "EN"
+                            elif home_skaters == 6:
+                                # Home has empty net (6 skaters, goalie pulled)
+                                # Away is defending against empty net - this is a defensive situation
+                                strength = "PK"
+                            else:
+                                strength = "EV"
+                        elif away_skaters == 5 and home_skaters == 5:
+                            strength = "EV"
+                        elif away_skaters > home_skaters:
+                            # Away has more skaters = power play for away
+                            # This is a power play situation (e.g., 5v4, 5v3, 4v3)
+                            # But check: if away > home and both are reasonable (3-5), it's a power play
+                            if away_skaters >= 3 and home_skaters >= 3:  # Valid power play range (3v3 to 5v4)
+                                strength = "PP"
+                                # Debug: Log power play detection for away team
+                                print(f"[gateway] DEBUG: AWAY power play detected - away_skaters={away_skaters}, home_skaters={home_skaters}, strength={strength}")
+                            else:
+                                # Invalid situation (e.g., 5v1, 5v2) - assume even strength
+                                strength = "EV"
+                        elif away_skaters < home_skaters:
+                            # Away has fewer skaters = penalty kill for away
+                            # Only if away_skaters < 5 (actually shorthanded, not just 5v6 empty net)
+                            if away_skaters < 5 and home_skaters <= 5 and away_skaters >= 3:  # Valid penalty kill range (3v5 to 4v5)
+                                strength = "PK"
+                                # Debug: Log penalty kill detection for away team
+                                print(f"[gateway] DEBUG: AWAY penalty kill detected - away_skaters={away_skaters}, home_skaters={home_skaters}, strength={strength}")
+                            else:
+                                # Invalid situation (e.g., 1v5, 2v5) - assume even strength
+                                strength = "EV"
+                        else:
+                            # away_skaters == home_skaters but not 5v5 (shouldn't happen in non-empty-net)
+                            strength = "EV"
+                else:
+                    # If we have strength from API, convert it to our internal format
+                    empty_net = (away_skaters == 6 or home_skaters == 6)
+                    
+                    # Convert API strength format to our internal format
+                    if strength_from_api == "PPG":
+                        strength = "PP"
+                    elif strength_from_api == "SHG":
+                        strength = "PK"  # Shorthanded goal = penalty kill from scoring team's perspective
                     else:
+                        # Default to even strength if unknown
                         strength = "EV"
-                else:  # AWAY team scored
-                    if empty_net:
-                        if away_skaters == 6:
-                            # Away has empty net (6 skaters, goalie pulled)
-                            # This is an empty net goal, label as PP only if opponent is shorthanded
-                            strength = "ENPP" if home_skaters < 5 else "EN"
-                        elif home_skaters == 6:
-                            # Home has empty net (6 skaters, goalie pulled)
-                            # Away is defending against empty net - this is a defensive situation
-                            strength = "PK"
-                        else:
-                            strength = "EV"
-                    elif away_skaters == 5 and home_skaters == 5:
-                        strength = "EV"
-                    elif away_skaters > home_skaters:
-                        # Away has more skaters = power play for away
-                        # This is a power play situation (e.g., 5v4, 5v3, 4v3)
-                        # But check: if away > home and both are reasonable (3-5), it's a power play
-                        if away_skaters >= 3 and home_skaters >= 3:  # Valid power play range (3v3 to 5v4)
-                            strength = "PP"
-                            # Debug: Log power play detection for away team
-                            print(f"[gateway] DEBUG: AWAY power play detected - away_skaters={away_skaters}, home_skaters={home_skaters}, strength={strength}")
-                        else:
-                            # Invalid situation (e.g., 5v1, 5v2) - assume even strength
-                            strength = "EV"
-                    elif away_skaters < home_skaters:
-                        # Away has fewer skaters = penalty kill for away
-                        # Only if away_skaters < 5 (actually shorthanded, not just 5v6 empty net)
-                        if away_skaters < 5 and home_skaters <= 5 and away_skaters >= 3:  # Valid penalty kill range (3v5 to 4v5)
-                            strength = "PK"
-                            # Debug: Log penalty kill detection for away team
-                            print(f"[gateway] DEBUG: AWAY penalty kill detected - away_skaters={away_skaters}, home_skaters={home_skaters}, strength={strength}")
-                        else:
-                            # Invalid situation (e.g., 1v5, 2v5) - assume even strength
-                            strength = "EV"
-                    else:
-                        # away_skaters == home_skaters but not 5v5 (shouldn't happen in non-empty-net)
-                        strength = "EV"
-            else:
-                # If we have strength from API, use it (already set above)
-                # But we still need to set empty_net for other logic
-                empty_net = (away_skaters == 6 or home_skaters == 6)
             
-            # Calculate timestamp
-            time_in_period = play.get("timeInPeriod", "00:00")
-            period = play.get("periodDescriptor", {}).get("number", 1)
+                # Calculate timestamp
+                time_in_period = play.get("timeInPeriod", "00:00")
+                period = play.get("periodDescriptor", {}).get("number", 1)
             
-            if game_start_ts:
-                try:
-                    minutes, seconds = map(int, time_in_period.split(":"))
-                    elapsed_seconds = minutes * 60 + seconds
-                    period_offset = (period - 1) * 1200
-                    timestamp = game_start_ts + period_offset + elapsed_seconds
-                except (ValueError, TypeError):
+                if game_start_ts:
+                    try:
+                        minutes, seconds = map(int, time_in_period.split(":"))
+                        elapsed_seconds = minutes * 60 + seconds
+                        period_offset = (period - 1) * 1200
+                        timestamp = game_start_ts + period_offset + elapsed_seconds
+                    except (ValueError, TypeError):
+                        timestamp = time.time()
+                else:
                     timestamp = time.time()
-            else:
-                timestamp = time.time()
             
-            # Format descriptive event description
-            event_desc = mapped_type
+                # Format descriptive event description
+                event_desc = mapped_type
             
-            if mapped_type == "SHOT":
-                # Build shot description with new format
-                shot_type = details.get("shotType", "").lower()
-                # Convert shot type to the format user wants (e.g., "wrist" -> "wrister")
-                # Keep "snap", "slap", and "backhand" as-is, convert others
-                shot_type_converter = {
-                    "snap": "snap",
-                    "slap": "slap",
-                    "wrist": "wrister",
-                    "backhand": "backhand",
-                    "tip-in": "tip-in",
-                    "deflected": "deflected",
-                    "wrap-around": "wrap-around",
-                }
-                shot_type_name = shot_type_converter.get(shot_type, shot_type if shot_type else "shot")
-                
-                # Check if shot was saved or missed
-                was_blocked = details.get("wasBlocked", False)
-                was_saved = details.get("wasOnGoal", False) if not was_blocked else False
-                
-                if was_saved:
-                    # Saved: "Saved wrister shot on goal"
-                    event_desc = f"Saved {shot_type_name} shot on goal"
-                elif was_blocked:
-                    # Blocked shots are handled separately, but format similarly
-                    event_desc = f"Blocked {shot_type_name} shot"
-                else:
-                    # Missed: "Missed wrister shot"
-                    event_desc = f"Missed {shot_type_name} shot"
-                        
-            elif mapped_type == "BLOCK":
-                # Get both blocking player and shooting player
-                blocking_player_id = details.get("playerId") or details.get("blockingPlayerId")
-                shooting_player_id = details.get("shootingPlayerId")
-                
-                # Get player names
-                blocking_player_name = None
-                if blocking_player_id:
-                    blocking_player_name = player_names.get(blocking_player_id)
-                    if not blocking_player_name:
-                        blocking_player_name = await get_player_name(blocking_player_id, r)
-                
-                shooting_player_name = None
-                if shooting_player_id:
-                    shooting_player_name = player_names.get(shooting_player_id)
-                    if not shooting_player_name:
-                        shooting_player_name = await get_player_name(shooting_player_id, r)
-                
-                # Build description: "PlayerName Blocked Shot (PlayerName shot)"
-                if blocking_player_name and shooting_player_name:
-                    event_desc = f"{blocking_player_name} Blocked Shot ({shooting_player_name} shot)"
-                elif blocking_player_name:
-                    event_desc = f"{blocking_player_name} Blocked Shot"
-                elif shooting_player_name:
-                    event_desc = f"Blocked Shot ({shooting_player_name} shot)"
-                else:
-                    event_desc = "Blocked Shot"
-                
-                # Use blocking player as the main player for display
-                if blocking_player_id:
-                    player_id = blocking_player_id
-                    player_name = blocking_player_name
-                    player_headshot = player_headshots.get(blocking_player_id)
-                    if not player_headshot and blocking_player_id:
-                        player_headshot = await get_player_headshot(blocking_player_id, r)
-                
-            elif mapped_type == "HIT":
-                event_desc = "Hit"
-                
-            elif mapped_type == "FACEOFF":
-                event_desc = "Faceoff Won"
-            elif mapped_type == "GIVEAWAY":
-                event_desc = "Giveaway"
-            elif mapped_type == "TAKEAWAY":
-                event_desc = "Takeaway"
-                
-            elif mapped_type == "GOAL":
-                # Get shot type and build descriptive goal description
-                shot_type = details.get("shotType", "").lower()
-                
+                if mapped_type == "SHOT":
+                    # Build shot description with new format
+                    shot_type = details.get("shotType", "").lower()
+                    # Convert shot type to the format user wants (e.g., "wrist" -> "wrister")
+                    # Keep "snap", "slap", and "backhand" as-is, convert others
+                    shot_type_converter = {
+                        "snap": "snap",
+                        "slap": "slap",
+                        "wrist": "wrister",
+                        "backhand": "backhand",
+                        "tip-in": "tip-in",
+                        "deflected": "deflected",
+                        "wrap-around": "wrap-around",
+                    }
+                    shot_type_name = shot_type_converter.get(shot_type, shot_type if shot_type else "shot")
+                    
+                    # Check if shot was saved or missed
+                    was_blocked = details.get("wasBlocked", False)
+                    was_saved = details.get("wasOnGoal", False) if not was_blocked else False
+                    
+                    if was_saved:
+                        # Saved: "Saved wrister shot on goal"
+                        event_desc = f"Saved {shot_type_name} shot on goal"
+                    elif was_blocked:
+                        # Blocked shots are handled separately, but format similarly
+                        event_desc = f"Blocked {shot_type_name} shot"
+                    else:
+                        # Missed: "Missed wrister shot"
+                        event_desc = f"Missed {shot_type_name} shot"
+                            
+                elif mapped_type == "BLOCK":
+                    # Get both blocking player and shooting player
+                    blocking_player_id = details.get("playerId") or details.get("blockingPlayerId")
+                    shooting_player_id = details.get("shootingPlayerId")
+                    
+                    # Get player names
+                    blocking_player_name = None
+                    if blocking_player_id:
+                        blocking_player_name = player_names.get(blocking_player_id)
+                        if not blocking_player_name:
+                            blocking_player_name = await get_player_name(blocking_player_id, r)
+                    
+                    shooting_player_name = None
+                    if shooting_player_id:
+                        shooting_player_name = player_names.get(shooting_player_id)
+                        if not shooting_player_name:
+                            shooting_player_name = await get_player_name(shooting_player_id, r)
+                    
+                    # Build description: "PlayerName Blocked Shot (PlayerName shot)"
+                    if blocking_player_name and shooting_player_name:
+                        event_desc = f"{blocking_player_name} Blocked Shot ({shooting_player_name} shot)"
+                    elif blocking_player_name:
+                        event_desc = f"{blocking_player_name} Blocked Shot"
+                    elif shooting_player_name:
+                        event_desc = f"Blocked Shot ({shooting_player_name} shot)"
+                    else:
+                        event_desc = "Blocked Shot"
+                    
+                    # Use blocking player as the main player for display
+                    if blocking_player_id:
+                        player_id = blocking_player_id
+                        player_name = blocking_player_name
+                        player_headshot = player_headshots.get(blocking_player_id)
+                        if not player_headshot and blocking_player_id:
+                            player_headshot = await get_player_headshot(blocking_player_id, r)
+                    
+                elif mapped_type == "HIT":
+                    event_desc = "Hit"
+                    
+                elif mapped_type == "FACEOFF":
+                    event_desc = "Faceoff Won"
+                elif mapped_type == "GIVEAWAY":
+                    event_desc = "Giveaway"
+                elif mapped_type == "TAKEAWAY":
+                    event_desc = "Takeaway"
+                    
+                elif mapped_type == "GOAL":
+                    # Get shot type and build descriptive goal description
+                        shot_type = details.get("shotType", "").lower()
+                    
                 # Calculate distance from goal
                 # NHL API uses a coordinate system where:
                 # - x ranges from 0 to 200 (one end to the other)
@@ -3391,19 +3435,19 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                     # Establish period 1 baseline when processing first period 1 play
                     if period == 1 and period1_baseline is None:
                         if home_defending_side == "right":
-                            # Period 1: Home defends right, attacks left → home goal at -89
+                            # Period 1: Home defends right → home goal on RIGHT side (positive x)
                             period1_baseline = {
-                                "home_goal_x": 89,
-                                "away_goal_x": -89
+                                "home_goal_x": 89,   # RIGHT side (positive)
+                                "away_goal_x": -89   # LEFT side (negative)
                             }
                         elif home_defending_side == "left":
-                            # Period 1: Home defends left, attacks right → home goal at 89
+                            # Period 1: Home defends left → home goal on LEFT side (negative x)
                             period1_baseline = {
-                                "home_goal_x": -89,
-                                "away_goal_x": 89
+                                "home_goal_x": -89,  # LEFT side (negative)
+                                "away_goal_x": 89    # RIGHT side (positive)
                             }
                         else:
-                            # Fallback: assume home starts on left (goal at 89)
+                            # Fallback: assume home starts on left (goal at -89)
                             period1_baseline = {
                                 "home_goal_x": -89,
                                 "away_goal_x": 89
@@ -3414,13 +3458,13 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                         # Use current period's defending side to infer
                         if home_defending_side == "right":
                             period1_baseline = {
-                                "home_goal_x": 89,
-                                "away_goal_x": -89
+                                "home_goal_x": 89,   # RIGHT side (positive)
+                                "away_goal_x": -89   # LEFT side (negative)
                             }
                         else:
                             period1_baseline = {
-                                "home_goal_x": -89,
-                                "away_goal_x": 89
+                                "home_goal_x": -89,  # LEFT side (negative)
+                                "away_goal_x": 89    # RIGHT side (positive)
                             }
                     
                     # Determine goal positions based on period and period 1 baseline
@@ -3456,12 +3500,10 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 if future_home_score == future_away_score and home_score != away_score:
                     game_situation = "game-tying "
                 # Go-ahead: team takes the lead with this goal
-                elif (team == "HOME" and future_home_score > away_score and home_score <= away_score) or \
-                     (team == "AWAY" and future_away_score > home_score and away_score <= home_score):
+                elif (team == "HOME" and future_home_score > away_score and home_score == away_score) or \
+                     (team == "AWAY" and future_away_score > home_score and away_score == home_score):
                     game_situation = "go-ahead "
-                # Insurance: team already winning and extends lead
-                elif (team == "HOME" and home_score > away_score) or (team == "AWAY" and away_score > home_score):
-                    game_situation = "insurance "
+
                 
                 # Format shot type
                 shot_type_map = {
@@ -3476,17 +3518,10 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 }
                 shot_desc = shot_type_map.get(shot_type, shot_type + " shot" if shot_type else "shot")
                 
-                # Add strength label (power play or shorthanded) before shot type
-                # Only label as power play if the scoring team is on the power play (PP or ENPP)
-                # PK means penalty kill (defensive situation, not power play goal)
-                # SH is kept for backward compatibility only (legacy data)
-                strength_label = ""
-                if strength == "PP" or strength == "ENPP":
-                    strength_label = "power play "
-                elif strength == "SH" or strength == "PK":
-                    # PK is the standard for penalty kill situations
-                    # SH is kept for backward compatibility with legacy data
-                    strength_label = "shorthanded "
+                # Add strength label (power-play or shorthanded) before shot type
+                # Only label as power-play if the scoring team is on the power play (PP) and NOT empty net
+                # Only label as shorthanded if the scoring team is shorthanded (PK/SH) and NOT empty net
+                strength_label = format_strength_label(strength, empty_net)
                 
                 # Debug: Log all goal strengths to verify they're being set correctly
                 # Log detailed information to help diagnose power play/short-handed detection issues
@@ -3522,10 +3557,10 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 
                 # Description is already in lowercase format - no capitalization needed
                     
-            elif mapped_type == "PENALTY":
-                # Get penalty details
-                # desc_key already extracted earlier, reuse it
-                duration = details.get("duration", 0)
+                elif mapped_type == "PENALTY":
+                    # Get penalty details
+                    # desc_key already extracted earlier, reuse it
+                    duration = details.get("duration", 0)
                 
                 # Check if this is a "too many men" penalty
                 is_too_many_men = desc_key == "too-many-men" or "too-many-men" in desc_key
@@ -3585,87 +3620,90 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                     if drawn_by_name:
                         event_desc += f" (drawn by {drawn_by_name})"
             
-            # Update score for goals
-            if mapped_type == "GOAL":
-                if team == "HOME":
-                    home_score += 1
-                else:
-                    away_score += 1
+                # Update score for goals
+                if mapped_type == "GOAL":
+                    if team == "HOME":
+                        home_score += 1
+                    else:
+                        away_score += 1
             
-            # Add event - ensure player_name has a fallback
-            final_player_name = player_name
-            if not final_player_name:
-                if player_id:
-                    # If we have a player_id but no name, try one more time to fetch it
-                    final_player_name = await get_player_name(player_id, r)
-                    if not final_player_name:
-                        final_player_name = f"Player {player_id}"
-                else:
-                    # No player_id - this might be a team event or event without a specific player
-                    # For team events (bench penalties), player_name should already be set to team name
-                    # For other events, set to None and frontend will handle it appropriately
-                    # For goals, always try to set a fallback name even if player_id is missing
-                    if mapped_type == "GOAL":
-                        # Goals are crucial events - always include them even without player info
-                        final_player_name = "Unknown Player" if not final_player_name else final_player_name
-                    elif mapped_type not in ["PENALTY"]:  # PENALTY already handles team name for bench penalties
-                        final_player_name = None
+                # Add event - ensure player_name has a fallback
+                final_player_name = player_name
+                if not final_player_name:
+                    if player_id:
+                        # If we have a player_id but no name, try one more time to fetch it
+                        final_player_name = await get_player_name(player_id, r)
+                        if not final_player_name:
+                            final_player_name = f"Player {player_id}"
+                    else:
+                        # No player_id - this might be a team event or event without a specific player
+                        # For team events (bench penalties), player_name should already be set to team name
+                        # For other events, set to None and frontend will handle it appropriately
+                        # For goals, always try to set a fallback name even if player_id is missing
+                        if mapped_type == "GOAL":
+                            # Goals are crucial events - always include them even without player info
+                            final_player_name = "Unknown Player" if not final_player_name else final_player_name
+                        elif mapped_type not in ["PENALTY"]:  # PENALTY already handles team name for bench penalties
+                            final_player_name = None
             
-            # Skip events that require a player but don't have one (HIT, SHOT, BLOCK, FACEOFF, GIVEAWAY, TAKEAWAY)
-            # Goals are ALWAYS included - they are crucial events and should never be skipped
-            # Penalties can have team names for bench penalties
-            if mapped_type in ["HIT", "SHOT", "BLOCK", "FACEOFF", "GIVEAWAY", "TAKEAWAY"]:
-                if not final_player_name or not player_id:
-                    continue  # Skip this event - no player information available
+                # Don't skip events - always include them even if player info is incomplete
+                # The old working version always added events, so we should too
+                # Frontend can handle missing player info appropriately
             
-            # Ensure event description is never empty and capitalize if needed
-            if not event_desc or event_desc.strip() == "":
-                event_desc = mapped_type
+                # Ensure event description is never empty and capitalize if needed
+                if not event_desc or event_desc.strip() == "":
+                    event_desc = mapped_type
+                
+                # Capitalize event description if it's still just the mapped type (fallback case)
+                if event_desc == mapped_type:
+                    event_desc = mapped_type.title()
+                
+                event_data = {
+                    "id": f"{game_id}-{play.get('eventId', len(events))}",
+                    "timestamp": timestamp,
+                    "event_type": mapped_type,
+                    "description": event_desc,
+                    "player": final_player_name,
+                    "player_id": player_id,
+                    "player_headshot": player_headshot,  # Add headshot URL
+                    "team": team,
+                    "strength": strength,
+                    "empty_net": empty_net,
+                    "home_score": home_score,
+                    "away_score": away_score,
+                    "period": period,
+                    "time_in_period": time_in_period,
+                }
             
-            # Capitalize event description if it's still just the mapped type (fallback case)
-            if event_desc == mapped_type:
-                event_desc = mapped_type.title()
-            
-            event_data = {
-                "id": f"{game_id}-{play.get('eventId', len(events))}",
-                "timestamp": timestamp,
-                "event_type": mapped_type,
-                "description": event_desc,
-                "player": final_player_name,
-                "player_id": player_id,
-                "player_headshot": player_headshot,  # Add headshot URL
-                "team": team,
-                "strength": strength,
-                "empty_net": empty_net,
-                "home_score": home_score,
-                "away_score": away_score,
-                "period": period,
-                "time_in_period": time_in_period,
-            }
-            
-            # Add assist information for goals
-            if mapped_type == "GOAL":
-                event_data["assist1"] = assist1_name
-                event_data["assist1_id"] = assist1_player_id
-                event_data["assist2"] = assist2_name
-                event_data["assist2_id"] = assist2_player_id
-                event_data["shot_type"] = details.get("shotType", "")
-                event_data["goal_number"] = details.get("scoringPlayerTotal", 0)
-            
-            # Add penalty details
-            if mapped_type == "PENALTY":
-                event_data["penalty_type"] = details.get("typeCode", "")
-                event_data["penalty_desc"] = details.get("descKey", "")
-                event_data["duration"] = details.get("duration", 0)
-                drawn_by_id = details.get("drawnByPlayerId")
-                if drawn_by_id:
-                    drawn_by_name = player_names.get(drawn_by_id)
-                    if not drawn_by_name:
-                        drawn_by_name = await get_player_name(drawn_by_id, r)
-                    event_data["drawn_by"] = drawn_by_name
-                    event_data["drawn_by_id"] = drawn_by_id
-            
-            events.append(event_data)
+                # Add assist information for goals
+                if mapped_type == "GOAL":
+                    event_data["assist1"] = assist1_name
+                    event_data["assist1_id"] = assist1_player_id
+                    event_data["assist2"] = assist2_name
+                    event_data["assist2_id"] = assist2_player_id
+                    event_data["shot_type"] = details.get("shotType", "")
+                    event_data["goal_number"] = details.get("scoringPlayerTotal", 0)
+                
+                # Add penalty details
+                if mapped_type == "PENALTY":
+                    event_data["penalty_type"] = details.get("typeCode", "")
+                    event_data["penalty_desc"] = details.get("descKey", "")
+                    event_data["duration"] = details.get("duration", 0)
+                    drawn_by_id = details.get("drawnByPlayerId")
+                    if drawn_by_id:
+                        drawn_by_name = player_names.get(drawn_by_id)
+                        if not drawn_by_name:
+                            drawn_by_name = await get_player_name(drawn_by_id, r)
+                        event_data["drawn_by"] = drawn_by_name
+                        event_data["drawn_by_id"] = drawn_by_id
+                
+                events.append(event_data)
+            except Exception as e:
+                # Log the error but continue processing other events
+                # This prevents one bad event from breaking the entire feed
+                event_id = play.get("eventId", "unknown")
+                logger.error(f"[gateway] Error processing event {event_id} for game {game_id}: {e}", exc_info=True)
+                continue  # Skip this event and continue with the next one
         
         # Determine max period from all plays to help frontend determine game state
         max_period = 1
@@ -3755,6 +3793,9 @@ async def get_playbyplay(game_id: str, limit: int = 30):
             if game_state not in ["OFF", "FINAL"]:
                 cache_age_key = f"playbyplay_cache_age:{game_id}"
                 await r.setex(cache_age_key, 10, str(time.time()))
+                # Trigger background refresh for live games to keep cache fresh
+                logger.info(f"[gateway] Initial cache created for live game {game_id}, triggering background refresh")
+                asyncio.create_task(_refresh_playbyplay_cache(game_id, r))
         
         return response
     except HTTPException:
@@ -3769,6 +3810,7 @@ async def _refresh_playbyplay_cache(game_id: str, r: Redis):
     so that subsequent requests can return cached data immediately.
     """
     try:
+        logger.info(f"[gateway] Starting background refresh for game {game_id}")
         # Fetch fresh data from API
         game_data = await fetch_nhl_play_by_play(game_id)
         if not game_data:
@@ -4032,32 +4074,35 @@ async def _refresh_playbyplay_cache(game_id: str, r: Redis):
                     # Establish period 1 baseline when processing first period 1 play
                     if period == 1 and period1_baseline is None:
                         if home_defending_side == "right":
+                            # Period 1: Home defends right → home goal on RIGHT side (positive x)
+                            period1_baseline = {
+                                "home_goal_x": 89,   # RIGHT side (positive)
+                                "away_goal_x": -89   # LEFT side (negative)
+                            }
+                        elif home_defending_side == "left":
+                            # Period 1: Home defends left → home goal on LEFT side (negative x)
+                            period1_baseline = {
+                                "home_goal_x": -89,  # LEFT side (negative)
+                                "away_goal_x": 89    # RIGHT side (positive)
+                            }
+                        else:
+                            # Fallback: assume home starts on left (goal at -89)
                             period1_baseline = {
                                 "home_goal_x": -89,
                                 "away_goal_x": 89
-                            }
-                        elif home_defending_side == "left":
-                            period1_baseline = {
-                                "home_goal_x": 89,
-                                "away_goal_x": -89
-                            }
-                        else:
-                            period1_baseline = {
-                                "home_goal_x": 89,
-                                "away_goal_x": -89
                             }
                     
                     # If we still don't have a baseline (shouldn't happen, but handle it)
                     if period1_baseline is None:
                         if home_defending_side == "right":
                             period1_baseline = {
-                                "home_goal_x": -89,
-                                "away_goal_x": 89
+                                "home_goal_x": 89,   # RIGHT side (positive)
+                                "away_goal_x": -89   # LEFT side (negative)
                             }
                         else:
                             period1_baseline = {
-                                "home_goal_x": 89,
-                                "away_goal_x": -89
+                                "home_goal_x": -89,  # LEFT side (negative)
+                                "away_goal_x": 89    # RIGHT side (positive)
                             }
                     
                     # Determine goal positions based on period and period 1 baseline
@@ -4090,8 +4135,7 @@ async def _refresh_playbyplay_cache(game_id: str, r: Redis):
                 elif (team == "HOME" and future_home_score > away_score and home_score <= away_score) or \
                      (team == "AWAY" and future_away_score > home_score and away_score <= home_score):
                     game_situation = "go-ahead "
-                elif (team == "HOME" and home_score > away_score) or (team == "AWAY" and away_score > home_score):
-                    game_situation = "insurance "
+            
                 
                 # Format shot type
                 shot_type_map = {
@@ -4106,17 +4150,10 @@ async def _refresh_playbyplay_cache(game_id: str, r: Redis):
                 }
                 shot_desc = shot_type_map.get(shot_type, shot_type + " shot" if shot_type else "shot")
                 
-                # Add strength label (power play or shorthanded) before shot type
-                # Only label as power play if the scoring team is on the power play (PP or ENPP)
-                # PK means penalty kill (defensive situation, not power play goal)
-                # SH is kept for backward compatibility only (legacy data)
-                strength_label = ""
-                if strength == "PP" or strength == "ENPP":
-                    strength_label = "power play "
-                elif strength == "SH" or strength == "PK":
-                    # PK is the standard for penalty kill situations
-                    # SH is kept for backward compatibility with legacy data
-                    strength_label = "shorthanded "
+                # Add strength label (power-play or shorthanded) before shot type
+                # Only label as power-play if the scoring team is on the power play (PP) and NOT empty net
+                # Only label as shorthanded if the scoring team is shorthanded (PK/SH) and NOT empty net
+                strength_label = format_strength_label(strength, empty_net)
                 
                 # Build goal description in lowercase format: "15' go-ahead power play snap shot goal"
                 shot_desc_lower = shot_desc.lower()
@@ -4290,9 +4327,10 @@ async def _refresh_playbyplay_cache(game_id: str, r: Redis):
         if not is_complete:
             cache_age_key = f"playbyplay_cache_age:{game_id}"
             await r.setex(cache_age_key, 10, str(time.time()))
+        logger.info(f"[gateway] Successfully refreshed cache for game {game_id} ({len(all_events)} events)")
         
     except Exception as e:
-        print(f"[gateway] Error refreshing play-by-play cache for {game_id}: {e}")
+        logger.error(f"[gateway] Error refreshing play-by-play cache for {game_id}: {e}", exc_info=True)
 
 @app.get("/v1/standings")
 async def get_standings():
