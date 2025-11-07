@@ -120,6 +120,24 @@ CACHE_CONTROL_NO_CACHE = "no-cache, no-store, must-revalidate, max-age=0"
 MODEL_DEFAULT_ID = "lightgbm_20251104_121934_d9b5b03f"
 MODEL_TYPE_BASELINE = "baseline"
 
+# Model Prediction Throttling
+MODEL_PREDICTION_INTERVAL_SECONDS = 3.0  # Update predictions every N seconds
+MODEL_PREDICTION_MAX_WORKERS = 4  # ThreadPool workers for async inference
+MODEL_PREDICTION_CRITICAL_TIME_SECONDS = 300  # Last 5 minutes - predict every event
+MODEL_PREDICTION_CLOSE_GAME_THRESHOLD = 1  # Score diff for "close game"
+
+# Significant Events (Always Predict)
+SIGNIFICANT_EVENTS = [
+    EVENT_TYPE_GOAL,
+    EVENT_TYPE_PENALTY,
+]
+
+# Conditional Significant Events (Only in close games)
+CONDITIONAL_SIGNIFICANT_EVENTS = [
+    EVENT_TYPE_SHOT,
+    EVENT_TYPE_BLOCK,
+]
+
 # Logging
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"

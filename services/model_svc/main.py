@@ -5,7 +5,8 @@ import os
 import random
 import sys
 import time
-from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional, Dict
 
 import psycopg
 from prometheus_client import Counter, Histogram, start_http_server
@@ -28,6 +29,13 @@ from common.constants import (
     PROMETHEUS_LATENCY_BUCKETS,
     MODEL_DEFAULT_ID,
     MODEL_TYPE_BASELINE,
+    MODEL_PREDICTION_INTERVAL_SECONDS,
+    MODEL_PREDICTION_MAX_WORKERS,
+    MODEL_PREDICTION_CRITICAL_TIME_SECONDS,
+    MODEL_PREDICTION_CLOSE_GAME_THRESHOLD,
+    SIGNIFICANT_EVENTS,
+    CONDITIONAL_SIGNIFICANT_EVENTS,
+    GAME_TOTAL_REGULATION_TIME_SECONDS,
 )
 from common.logging_config import setup_logger
 from model_loader import load_production_model
@@ -44,8 +52,16 @@ MODEL_ID = os.environ.get("MODEL_ID", MODEL_DEFAULT_ID)
 # A/B testing configuration
 AB_TEST_ENABLED = os.environ.get("AB_TEST_ENABLED", "false").lower() == "true"
 
+# Prediction throttling configuration (can be overridden by env vars)
+PREDICTION_INTERVAL = float(
+    os.environ.get("PREDICTION_INTERVAL_SECONDS", MODEL_PREDICTION_INTERVAL_SECONDS)
+)
+
 CONSUMER = f"model-{random.randint(CONSUMER_ID_MIN, CONSUMER_ID_MAX)}"
 db_conn: Optional[psycopg.AsyncConnection] = None
+
+# ThreadPool for non-blocking model inference
+INFERENCE_EXECUTOR = ThreadPoolExecutor(max_workers=MODEL_PREDICTION_MAX_WORKERS)
 
 
 async def create_group_if_needed(r: Redis, stream: str, group: str) -> None:
@@ -82,11 +98,139 @@ async def get_db_connection() -> Optional[psycopg.AsyncConnection]:
 
 # Prometheus metrics
 PRED_COUNTER = Counter("model_predictions_total", "Total predictions produced")
-PROC_TIME = Histogram(
-    "model_processing_seconds",
-    "Model processing time",
+PRED_SKIPPED = Counter("model_predictions_skipped_total", "Predictions skipped by throttling")
+INFERENCE_TIME = Histogram(
+    "model_inference_seconds",
+    "Pure model inference time",
     buckets=PROMETHEUS_LATENCY_BUCKETS,
 )
+PROC_TIME = Histogram(
+    "model_processing_seconds",
+    "Total processing time including feature engineering",
+    buckets=PROMETHEUS_LATENCY_BUCKETS,
+)
+
+
+async def predict_async(model, model_type: str, raw_features: Dict) -> float:
+    """
+    Run model prediction asynchronously in thread pool to avoid blocking event loop.
+
+    Args:
+        model: Model instance (baseline or trained LightGBM)
+        model_type: Type of model ("baseline" or trained model type)
+        raw_features: Raw feature dictionary
+
+    Returns:
+        Predicted home team win probability (0.0 to 1.0)
+    """
+    loop = asyncio.get_event_loop()
+    inference_start = time.perf_counter()
+
+    if model_type == MODEL_TYPE_BASELINE:
+        # Baseline model prediction (simple formula)
+        home_score = raw_features.get("home_score", 0)
+        away_score = raw_features.get("away_score", 0)
+        seconds_elapsed = raw_features.get("seconds_elapsed", 0)
+
+        # Run in executor to avoid blocking (even though it's fast)
+        p_home = await loop.run_in_executor(
+            INFERENCE_EXECUTOR,
+            model.predict,
+            home_score,
+            away_score,
+            seconds_elapsed,
+        )
+    else:
+        # Trained model requires feature engineering
+        import pandas as pd
+
+        # Engineer features (fast, but run in executor for consistency)
+        def _engineer_and_predict():
+            engineered = engineer_features(raw_features)
+            feature_df = pd.DataFrame([engineered])
+            return float(model.predict(feature_df)[0])
+
+        p_home = await loop.run_in_executor(INFERENCE_EXECUTOR, _engineer_and_predict)
+
+    inference_time = time.perf_counter() - inference_start
+    INFERENCE_TIME.observe(inference_time)
+
+    if inference_time > 0.1:  # Log slow predictions (>100ms)
+        logger.warning(
+            f"Slow inference: {inference_time*1000:.1f}ms for model_type={model_type}"
+        )
+
+    return p_home
+
+
+def should_predict(
+    game_id: str,
+    features: Dict,
+    last_prediction_times: Dict[str, float],
+    current_time: float,
+) -> bool:
+    """
+    Determine if we should generate a prediction for this feature event.
+
+    Uses smart throttling to balance accuracy with performance:
+    - Always predict on significant events (goals, penalties)
+    - Always predict in critical game moments (last 5 minutes)
+    - Predict on shots/blocks in close games
+    - Otherwise, throttle to configured interval
+
+    Args:
+        game_id: Game identifier
+        features: Feature dictionary with game state
+        last_prediction_times: Dict tracking last prediction time per game
+        current_time: Current timestamp
+
+    Returns:
+        True if should predict, False if should skip
+    """
+    # Get game state
+    last_event = features.get("last_event", "")
+    home_score = int(features.get("home_score", 0))
+    away_score = int(features.get("away_score", 0))
+    seconds_elapsed = float(features.get("seconds_elapsed", 0))
+
+    # Calculate time remaining
+    time_remaining = GAME_TOTAL_REGULATION_TIME_SECONDS - seconds_elapsed
+    score_diff = abs(home_score - away_score)
+
+    # Always predict on significant events
+    if last_event in SIGNIFICANT_EVENTS:
+        logger.debug(f"Predicting on significant event: {last_event}")
+        return True
+
+    # Always predict in critical time (last 5 minutes)
+    if time_remaining < MODEL_PREDICTION_CRITICAL_TIME_SECONDS:
+        logger.debug(f"Predicting in critical time: {time_remaining:.0f}s remaining")
+        return True
+
+    # Predict on conditional events in close games
+    if (
+        score_diff <= MODEL_PREDICTION_CLOSE_GAME_THRESHOLD
+        and last_event in CONDITIONAL_SIGNIFICANT_EVENTS
+    ):
+        logger.debug(f"Predicting on {last_event} in close game (diff={score_diff})")
+        return True
+
+    # Check time-based throttling
+    last_pred_time = last_prediction_times.get(game_id, 0)
+    time_since_last = current_time - last_pred_time
+
+    if time_since_last >= PREDICTION_INTERVAL:
+        logger.debug(
+            f"Predicting due to interval: {time_since_last:.1f}s since last prediction"
+        )
+        return True
+
+    # Skip this prediction
+    logger.debug(
+        f"Skipping prediction: {time_since_last:.1f}s since last "
+        f"(interval={PREDICTION_INTERVAL}s)"
+    )
+    return False
 
 
 async def run_model() -> None:
@@ -148,6 +292,15 @@ async def run_model() -> None:
             model = model_loader.model
             model_type = model_loader.model_type
 
+    # Track last prediction time per game for throttling
+    last_prediction_times: Dict[str, float] = {}
+
+    logger.info(
+        f"Prediction throttling: interval={PREDICTION_INTERVAL}s, "
+        f"critical_time={MODEL_PREDICTION_CRITICAL_TIME_SECONDS}s, "
+        f"close_game_threshold={MODEL_PREDICTION_CLOSE_GAME_THRESHOLD}"
+    )
+
     while True:
         resp = await r.xreadgroup(
             GROUP_MODEL_SVC,
@@ -206,34 +359,38 @@ async def run_model() -> None:
                             selected_model = variant_loader.model
                             selected_model_type = variant_loader.model_type
 
-                    # Prepare features for prediction
+                    # Prepare raw features for throttling check and prediction
+                    raw_features = {
+                        "home_score": home,
+                        "away_score": away,
+                        "seconds_elapsed": seconds_elapsed,
+                        "strength": features.get("strength", "EV"),
+                        "last_event": features.get("last_event", "FACEOFF"),
+                    }
+
+                    # Smart throttling: check if we should predict for this event
+                    current_time = time.time()
+                    if not should_predict(
+                        game_id, raw_features, last_prediction_times, current_time
+                    ):
+                        # Skip this prediction to reduce load
+                        PRED_SKIPPED.inc()
+                        await r.xack(STREAM_FEATURES, GROUP_MODEL_SVC, mid)
+                        continue
+
+                    # Run prediction asynchronously (non-blocking)
+                    p_home = await predict_async(
+                        selected_model, selected_model_type, raw_features
+                    )
+
+                    # Update last prediction time for this game
+                    last_prediction_times[game_id] = current_time
+
+                    # For A/B testing logging, get engineered features
                     if selected_model_type == MODEL_TYPE_BASELINE:
-                        p_home = selected_model.predict(home, away, seconds_elapsed)
-                        raw_features = {
-                            "home_score": home,
-                            "away_score": away,
-                            "seconds_elapsed": seconds_elapsed,
-                            "strength": features.get("strength", "EV"),
-                            "last_event": features.get("last_event", "FACEOFF"),
-                        }
                         engineered_features = raw_features
                     else:
-                        # Trained model needs full engineered feature set
-                        import pandas as pd
-
-                        # Add raw features needed for engineering
-                        raw_features = {
-                            "home_score": home,
-                            "away_score": away,
-                            "seconds_elapsed": seconds_elapsed,
-                            "strength": features.get("strength", "EV"),
-                            "last_event": features.get("last_event", "FACEOFF"),
-                        }
-                        # Engineer features matching training pipeline
                         engineered_features = engineer_features(raw_features)
-                        # Create DataFrame with engineered features
-                        feature_df = pd.DataFrame([engineered_features])
-                        p_home = float(selected_model.predict(feature_df)[0])
 
                     # Log prediction for A/B testing
                     if ab_tracker and selected_variant:
