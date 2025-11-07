@@ -60,7 +60,7 @@ async def test_model_takes_events(game_id: str):
         max_wait = 30
         for i in range(max_wait // 2):
             status = await redis.hgetall(f"ingestion_status:{game_id}")
-            if status and status.get("status") == "complete":
+            if status and status.get("status") == "completed":
                 print("  ✓ Ingestion completed")
                 break
             elif status and status.get("status") == "failed":
@@ -195,4 +195,3 @@ if __name__ == "__main__":
             sys.exit(1)
     
     asyncio.run(test_model_takes_events(game_id))
-

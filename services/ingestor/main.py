@@ -1,7 +1,9 @@
 import asyncio
 import json
+import logging
 import os
 import random
+import sys
 import time
 from datetime import datetime
 
@@ -9,71 +11,118 @@ import httpx
 import psycopg
 from redis.asyncio import Redis
 
+# Add parent directory to path for common imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+
+from common.constants import (
+    NHL_API_BASE_URL,
+    NHL_API_TIMEOUT_SECONDS,
+    REDIS_DEFAULT_URL,
+    STREAM_EVENTS,
+    GROUP_INGESTORS,
+    CONSUMER_ID_MIN,
+    CONSUMER_ID_MAX,
+    SYNTHETIC_GAME_DURATION_SECONDS,
+    EVENT_PROCESSING_SLEEP_SECONDS,
+    NHL_EVENT_INGESTION_SLEEP_SECONDS,
+    EVENT_WEIGHT_SHOT,
+    EVENT_WEIGHT_FACEOFF,
+    EVENT_WEIGHT_HIT,
+    EVENT_WEIGHT_PENALTY,
+    PROBABILITY_SHOT_IS_GOAL,
+    PROBABILITY_POWER_PLAY,
+    STRENGTH_EVEN,
+    STRENGTH_POWER_PLAY,
+    STRENGTH_PENALTY_KILL,
+    RINK_X_MIN,
+    RINK_X_MAX,
+    RINK_Y_MIN,
+    RINK_Y_MAX,
+    GAME_PERIOD_DURATION_SECONDS,
+)
+from common.logging_config import setup_logger
 from events import GameEvent
 
-# NHL API base URL
-NHL_API_BASE = "https://api-web.nhle.com/v1"
+# Configure logging
+logger = setup_logger("ingestor", level=logging.INFO)
 
 
 async def fetch_nhl_play_by_play(game_id: str) -> dict:
-    """Fetch play-by-play data directly from NHL API"""
+    """
+    Fetch play-by-play data directly from NHL API.
+
+    Args:
+        game_id: NHL game ID to fetch
+
+    Returns:
+        Game data dictionary or None if fetch failed
+    """
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=NHL_API_TIMEOUT_SECONDS) as client:
             response = await client.get(
-                f"{NHL_API_BASE}/gamecenter/{game_id}/play-by-play"
+                f"{NHL_API_BASE_URL}/gamecenter/{game_id}/play-by-play"
             )
             if response.status_code == 200:
                 return response.json()
             else:
-                print(
-                    f"[ingestor] NHL API error {response.status_code} for game {game_id}"
+                logger.warning(
+                    f"NHL API returned status {response.status_code} for game {game_id}"
                 )
                 return None
     except Exception as e:
-        print(f"[ingestor] Error fetching NHL play-by-play for game {game_id}: {e}")
+        logger.error(f"Error fetching NHL play-by-play for game {game_id}: {e}", exc_info=True)
         return None
 
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = os.environ.get("REDIS_URL", REDIS_DEFAULT_URL)
 GAME_ID = os.environ.get("GAME_ID", "TEST_GAME")
-
-STREAM_EVENTS = "events"
-GROUP = "ingestors"
-CONSUMER = f"producer-{random.randint(1000, 9999)}"  # not used for producer but kept symmetrical
+CONSUMER = f"producer-{random.randint(CONSUMER_ID_MIN, CONSUMER_ID_MAX)}"
 
 
-async def ensure_streams(r: Redis):
+async def ensure_streams(r: Redis) -> None:
+    """
+    Create event stream if it doesn't exist.
+
+    Args:
+        r: Redis client instance
+    """
     # Create an empty stream so downstream groups can be created safely.
     await r.xadd(STREAM_EVENTS, {"bootstrap": "1"}, id="*")
 
 
-async def produce_synthetic_game(r: Redis, game_id: str):
-    print(f"[ingestor] starting synthetic game for {game_id}")
+async def produce_synthetic_game(r: Redis, game_id: str) -> None:
+    """
+    Produce synthetic game events for testing/demo purposes.
+
+    Args:
+        r: Redis client instance
+        game_id: Game ID to generate events for
+    """
+    logger.info(f"Starting synthetic game for {game_id}")
     start = time.time()
-    clock_total = 20 * 60  # 20 minutes demo
+    clock_total = SYNTHETIC_GAME_DURATION_SECONDS
 
     t = 0.0
     random.seed(42)
     while t < clock_total:
-        await asyncio.sleep(0.5)  # emit ~2 events/sec
+        await asyncio.sleep(EVENT_PROCESSING_SLEEP_SECONDS)  # emit ~2 events/sec
 
         # Random event selection
         ev_choice = random.choices(
             ["SHOT", "FACEOFF", "HIT", "PENALTY"],
-            weights=[0.6, 0.1, 0.2, 0.1],
+            weights=[EVENT_WEIGHT_SHOT, EVENT_WEIGHT_FACEOFF, EVENT_WEIGHT_HIT, EVENT_WEIGHT_PENALTY],
             k=1,
         )[0]
         team = random.choice(["HOME", "AWAY"])
 
         # Occasional goals
-        if ev_choice == "SHOT" and random.random() < 0.07:
+        if ev_choice == "SHOT" and random.random() < PROBABILITY_SHOT_IS_GOAL:
             ev_choice = "GOAL"
 
-        strength = "EV"
-        if random.random() < 0.08:
-            strength = random.choice(["PP", "PK"])
+        strength = STRENGTH_EVEN
+        if random.random() < PROBABILITY_POWER_PLAY:
+            strength = random.choice([STRENGTH_POWER_PLAY, STRENGTH_PENALTY_KILL])
 
         now = time.time()
         payload = GameEvent(
@@ -82,8 +131,8 @@ async def produce_synthetic_game(r: Redis, game_id: str):
             team=team,
             event_type=ev_choice,
             strength=strength,
-            x=random.uniform(-100, 100),
-            y=random.uniform(-42.5, 42.5),
+            x=random.uniform(RINK_X_MIN, RINK_X_MAX),
+            y=random.uniform(RINK_Y_MIN, RINK_Y_MAX),
             shot_quality=random.random(),
         ).model_dump()
 
@@ -107,17 +156,25 @@ async def produce_synthetic_game(r: Redis, game_id: str):
                         )
                         await conn.commit()
         except Exception as e:
-            print("[ingestor][db] insert error:", e)
+            logger.error(f"Database insert error: {e}", exc_info=True)
 
         sid = await r.xadd(STREAM_EVENTS, {"json": json.dumps(payload)})
-        print(f"[ingestor] XADD events id={sid} {payload['event_type']} team={team}")
+        logger.debug(f"Published event {sid}: {payload['event_type']} team={team}")
         t = now - start
 
-    print("[ingestor] game complete.")
+    logger.info("Synthetic game complete")
 
 
 async def fetch_nhl_game_data(game_id: str):
-    """Fetch live or completed NHL game data"""
+    """
+    Fetch live or completed NHL game data.
+
+    Args:
+        game_id: NHL game ID to fetch
+
+    Returns:
+        Game data dictionary or None if unavailable
+    """
     try:
         # Try to get play-by-play data
         game_data = await fetch_nhl_play_by_play(game_id)
@@ -134,19 +191,25 @@ async def fetch_nhl_game_data(game_id: str):
 
         return None
     except Exception as e:
-        print(f"[ingestor][nhl] Error fetching game {game_id}: {e}")
+        logger.error(f"Error fetching NHL game {game_id}: {e}", exc_info=True)
         return None
 
 
-async def produce_nhl_game(r: Redis, game_id: str):
-    """Produce events from real NHL game data"""
-    print(f"[ingestor] Fetching NHL game data for {game_id}")
+async def produce_nhl_game(r: Redis, game_id: str) -> None:
+    """
+    Produce events from real NHL game data.
+
+    Args:
+        r: Redis client instance
+        game_id: NHL game ID to ingest
+    """
+    logger.info(f"Fetching NHL game data for {game_id}")
 
     game_data = await fetch_nhl_game_data(game_id)
 
     if not game_data:
-        print(
-            f"[ingestor] Could not fetch NHL data for {game_id}, falling back to synthetic"
+        logger.warning(
+            f"Could not fetch NHL data for {game_id}, falling back to synthetic"
         )
         await produce_synthetic_game(r, game_id)
         return
@@ -155,7 +218,7 @@ async def produce_nhl_game(r: Redis, game_id: str):
     plays = game_data.get("plays", [])
 
     if not plays:
-        print("[ingestor] No play-by-play data available, using synthetic")
+        logger.warning("No play-by-play data available, using synthetic")
         await produce_synthetic_game(r, game_id)
         return
 
@@ -163,7 +226,7 @@ async def produce_nhl_game(r: Redis, game_id: str):
     home_team_id = game_data.get("homeTeam", {}).get("id")
     away_team_id = game_data.get("awayTeam", {}).get("id")
 
-    print(f"[ingestor] Processing {len(plays)} events from NHL API")
+    logger.info(f"Processing {len(plays)} events from NHL API")
 
     # Process real NHL events
     for play in plays:

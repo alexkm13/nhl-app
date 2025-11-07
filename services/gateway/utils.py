@@ -164,6 +164,7 @@ async def run_ingestion(game_id: str, redis: Redis):
         # Clear game state and predictions to prevent accumulation
         await redis.delete(f"state:{game_id}")
         await redis.delete(f"pred:{game_id}")
+        await redis.delete(f"game_start_ts:{game_id}")
         # Set a flag to signal feature_state to reset this game's state
         await redis.setex(f"reset_game:{game_id}", 60, "1")  # Expires in 60 seconds
 
@@ -374,7 +375,7 @@ async def run_ingestion(game_id: str, redis: Redis):
             )
 
         # Mark ingestion as complete
-        await redis.hset(f"ingestion_status:{game_id}", "status", "complete")
+        await redis.hset(f"ingestion_status:{game_id}", "status", "completed")
         await redis.hset(
             f"ingestion_status:{game_id}",
             "completed_at",

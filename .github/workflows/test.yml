@@ -43,7 +43,7 @@ jobs:
     
     - name: Run tests
       run: |
-        pytest services/gateway/tests/ -v --cov=services --cov-report=xml
+        pytest services/gateway/tests/ tests/ -v --cov=services --cov-report=xml
     
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v3

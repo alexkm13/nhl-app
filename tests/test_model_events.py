@@ -81,7 +81,7 @@ async def test_model_events_flow(game_id: str):
             if status:
                 status_value = status.get("status", "")
                 print(f"  Ingestion status: {status_value} (waited {wait_time}s)")
-                if status_value == "complete":
+                if status_value == "completed":
                     ingestion_complete = True
                     break
                 elif status_value == "failed":
@@ -228,4 +228,3 @@ if __name__ == "__main__":
             sys.exit(1)
     
     asyncio.run(test_model_events_flow(game_id))
-

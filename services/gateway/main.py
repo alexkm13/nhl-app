@@ -1,5 +1,7 @@
+import logging
 import os
 import re
+import sys
 import time
 
 from fastapi import FastAPI
@@ -15,22 +17,40 @@ from prometheus_client import (
 )
 from redis.asyncio import Redis
 
+# Add parent directory to path for common imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+
+from common.constants import (
+    REDIS_DEFAULT_URL,
+    PROMETHEUS_LATENCY_BUCKETS,
+    CORS_ALLOW_ALL,
+)
+from common.logging_config import setup_logger
+from common.health import check_redis_health, create_health_response
+from common.rate_limiter import RateLimitMiddleware
 from routes.games import router as games_router
 from routes.playbyplay import router as playbyplay_router
 from routes.standings import router as standings_router
 from routes.websocket import router as websocket_router
 
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-app = FastAPI(title="GameCast++ Gateway")
+# Configure logging
+logger = setup_logger("gateway", level=logging.INFO)
+
+REDIS_URL = os.environ.get("REDIS_URL", REDIS_DEFAULT_URL)
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+app = FastAPI(title="GameCast++ Gateway", version="1.0.0")
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins
+    allow_origins=[CORS_ALLOW_ALL],  # TODO: Restrict to specific origins in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add rate limiting middleware
+app.add_middleware(RateLimitMiddleware)
 
 # Serve static files
 static_dir = os.path.join(os.path.dirname(__file__), "static")
@@ -111,7 +131,7 @@ REQUESTS = Counter(
 LATENCY = Histogram(
     "gateway_request_latency_seconds",
     "Request latency",
-    buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2],
+    buckets=PROMETHEUS_LATENCY_BUCKETS,
 )
 WS_CONNECTIONS = Gauge("gateway_ws_connections", "Current websocket connections")
 
@@ -141,21 +161,40 @@ app.include_router(standings_router)
 app.include_router(websocket_router)
 
 
+@app.get("/health")
+async def health():
+    """
+    Health check endpoint.
+
+    Returns service health status and dependency checks.
+    """
+    redis_status = await check_redis_health(REDIS_URL)
+
+    health_response = create_health_response(
+        service_name="gateway",
+        version="1.0.0",
+        redis_status=redis_status,
+    )
+
+    return health_response
+
+
 @app.get("/metrics")
 async def metrics():
+    """Prometheus metrics endpoint."""
     data = generate_latest()
-    return (
-        data,
-        200,
-        {"Content-Type": CONTENT_TYPE_LATEST},
-    )
+    return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 
 
 @app.on_event("startup")
 async def startup():
+    """Initialize resources on startup."""
     app.state.redis = Redis.from_url(REDIS_URL, decode_responses=True)
+    logger.info("Gateway service started")
 
 
 @app.on_event("shutdown")
 async def shutdown():
+    """Cleanup resources on shutdown."""
     await app.state.redis.aclose()
+    logger.info("Gateway service shutting down")
