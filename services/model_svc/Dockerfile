@@ -7,7 +7,14 @@ RUN apt-get update && apt-get install -y \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
+# Copy service-specific requirements and install dependencies
+COPY services/model_svc/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
+
+# Copy common module (shared across services)
+COPY common/ ./common/
+
+# Copy service-specific files
+COPY services/model_svc/ ./
+
 CMD ["python", "main.py"]

@@ -20,7 +20,9 @@ services:
         condition: service_healthy
 
   feature_state:
-    build: ./services/feature_state
+    build:
+      context: .
+      dockerfile: services/feature_state/Dockerfile
     environment:
       - REDIS_URL=redis://redis:6379/0
     depends_on:
@@ -28,7 +30,9 @@ services:
         condition: service_healthy
 
   model_svc:
-    build: ./services/model_svc
+    build:
+      context: .
+      dockerfile: services/model_svc/Dockerfile
     environment:
       - REDIS_URL=redis://redis:6379/0
       - MODEL_ID=lightgbm_20251104_121934_d9b5b03f
@@ -47,7 +51,9 @@ services:
         condition: service_healthy
 
   gateway:
-    build: ./services/gateway
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
     environment:
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql://postgres:postgres@timescaledb:5432/gamecast
@@ -61,8 +67,8 @@ services:
 
   gateway-test:
     build:
-      context: ./services/gateway
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/gateway/Dockerfile
     environment:
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql://postgres:postgres@timescaledb:5432/gamecast
