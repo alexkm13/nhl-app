@@ -67,18 +67,19 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 cached_data = json.loads(cached)
                 game_state = cached_data.get("game_state", "")
                 if game_state in ["OFF", "FINAL"]:
+                    # For completed games, ensure cache only has crucial events
                     events = cached_data.get("events", [])
                     if events:
                         crucial_events = [
                             e
                             for e in events
-                            if e.get("event_type") in ["GOAL", "PENALTY"]
+                            if e.get("event_type") in ["GOAL", "PENALTY", "PERIOD_END"]
                         ]
                         crucial_events.sort(
                             key=lambda x: x.get("timestamp", 0), reverse=True
                         )
                         cached_data["events"] = crucial_events
-                    return cached_data
+                    return JSONResponse(content=cached_data)
                 else:
                     cache_age_key = f"playbyplay_cache_age:{game_id}"
                     cache_age = await r.get(cache_age_key)
@@ -739,26 +740,18 @@ async def get_playbyplay(game_id: str, limit: int = 30):
         ]
 
         if is_complete:
-            # For completed games, return all crucial events up to limit
-            all_events = crucial_events[:limit] if limit > 0 else crucial_events
+            # For completed games: ONLY crucial events (ignore limit)
+            all_events = crucial_events
         else:
-            # For live games, prioritize crucial events but respect limit
+            # For live games: ALL crucial events + last 4 non-crucial events (ignore limit)
             non_crucial_events = [
                 e
                 for e in events
                 if e.get("event_type") not in ["GOAL", "PENALTY", "PERIOD_END"]
             ]
-            # Allocate limit: prioritize crucial events, then non-crucial
-            if limit > 0:
-                crucial_count = min(len(crucial_events), limit)
-                non_crucial_count = max(0, limit - crucial_count)
-                limited_crucial = crucial_events[:crucial_count]
-                limited_non_crucial = non_crucial_events[:non_crucial_count]
-                all_events = limited_crucial + limited_non_crucial
-            else:
-                # No limit: return all crucial + 4 non-crucial (original behavior)
-                limited_non_crucial = non_crucial_events[:4]
-                all_events = crucial_events + limited_non_crucial
+            # Get last 4 non-crucial events (most recent first after sorting)
+            limited_non_crucial = non_crucial_events[:4]
+            all_events = crucial_events + limited_non_crucial
 
         # Sort final result by timestamp descending
         all_events.sort(
