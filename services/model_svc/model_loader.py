@@ -58,16 +58,29 @@ class ModelLoader:
         elif self.model_id:
             # Load from registry - try multiple possible locations
             # First try mounted volumes (Docker)
+            # Try direct model path first (works for any model ID)
             possible_paths = [
                 # Mounted volumes in Docker
                 os.path.join("/app", "models", self.model_id, "model.pkl"),
-                os.path.join(
-                    "/app",
-                    "experiments",
-                    f"experiment_{self.model_id.split('_')[1]}_{self.model_id.split('_')[2]}",
-                    "model.pkl",
-                ),
             ]
+
+            # Try experiment path only if model_id matches expected pattern (type_timestamp_hash)
+            # Handle non-standard model IDs gracefully
+            model_id_parts = self.model_id.split('_')
+            if len(model_id_parts) >= 3:
+                try:
+                    # Assume format: type_timestamp_hash
+                    possible_paths.append(
+                        os.path.join(
+                            "/app",
+                            "experiments",
+                            f"experiment_{model_id_parts[1]}_{model_id_parts[2]}",
+                            "model.pkl",
+                        )
+                    )
+                except (IndexError, ValueError):
+                    # If parsing fails, skip experiment path
+                    pass
 
             # Also try relative paths (local development)
             base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -75,14 +88,22 @@ class ModelLoader:
             possible_paths.extend(
                 [
                     os.path.join(training_dir, "models", self.model_id, "model.pkl"),
-                    os.path.join(
-                        training_dir,
-                        "experiments",
-                        f"experiment_{self.model_id.split('_')[1]}_{self.model_id.split('_')[2]}",
-                        "model.pkl",
-                    ),
                 ]
             )
+            
+            # Try experiment path for relative paths too (if pattern matches)
+            if len(model_id_parts) >= 3:
+                try:
+                    possible_paths.append(
+                        os.path.join(
+                            training_dir,
+                            "experiments",
+                            f"experiment_{model_id_parts[1]}_{model_id_parts[2]}",
+                            "model.pkl",
+                        )
+                    )
+                except (IndexError, ValueError):
+                    pass
 
             # Try loading from registry metadata to get exact path
             # Try both mounted volume and relative paths

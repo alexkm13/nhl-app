@@ -37,13 +37,18 @@ from routes.websocket import router as websocket_router
 logger = setup_logger("gateway", level=logging.INFO)
 
 REDIS_URL = os.environ.get("REDIS_URL", REDIS_DEFAULT_URL)
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+# DATABASE_URL should fail fast if not set properly (empty string can cause silent failures)
+DATABASE_URL = os.environ.get("DATABASE_URL", None)
 app = FastAPI(title="GameCast++ Gateway", version="1.0.0")
 
 # Add CORS middleware
+# Get allowed origins from environment variable or use wildcard for development
+CORS_ORIGINS = os.environ.get("CORS_ALLOWED_ORIGINS", CORS_ALLOW_ALL)
+allowed_origins = [origin.strip() for origin in CORS_ORIGINS.split(",")] if CORS_ORIGINS != CORS_ALLOW_ALL else [CORS_ALLOW_ALL]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[CORS_ALLOW_ALL],  # TODO: Restrict to specific origins in production
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

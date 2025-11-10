@@ -40,14 +40,17 @@ def get_redis() -> Redis:
 
 async def _refresh_playbyplay_cache(game_id: str, r: Redis):
     """Background task to refresh play-by-play cache for live games."""
+    import logging
+    logger = logging.getLogger("gateway")
+
     try:
         game_data = await fetch_nhl_play_by_play(game_id)
         if not game_data:
             return
         # Cache refresh logic here - simplified for now
-        print(f"[gateway] Refreshed play-by-play cache for {game_id}")
+        logger.info(f"Refreshed play-by-play cache for {game_id}")
     except Exception as e:
-        print(f"[gateway] Error refreshing play-by-play cache for {game_id}: {e}")
+        logger.error(f"Error refreshing play-by-play cache for {game_id}: {e}", exc_info=True)
 
 
 @router.get("/{game_id}/playbyplay")
@@ -87,9 +90,20 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                             if age > 5:
                                 pass  # Fetch fresh data
                             else:
-                                asyncio.create_task(
+                                # Create background refresh task with error handling
+                                task = asyncio.create_task(
                                     _refresh_playbyplay_cache(game_id, r)
                                 )
+
+                                # Add callback to log any uncaught exceptions
+                                def handle_refresh_exception(task):
+                                    try:
+                                        task.result()
+                                    except Exception as e:
+                                        print(f"[gateway] Error refreshing playbyplay cache: {e}")
+
+                                task.add_done_callback(handle_refresh_exception)
+
                                 response = JSONResponse(content=cached_data)
                                 response.headers["Cache-Control"] = (
                                     "no-cache, no-store, must-revalidate, max-age=0"
@@ -597,11 +611,13 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                     away_score += 1
 
             # Determine final player name
+            # Add validation after async player lookups
             final_player_name = player_name
             if not final_player_name:
                 if player_id:
                     final_player_name = await get_player_name(player_id, r)
-                    if not final_player_name:
+                    # Validate player name after async lookup
+                    if not final_player_name or not isinstance(final_player_name, str):
                         final_player_name = f"Player {player_id}"
                 else:
                     if mapped_type == "GOAL":
@@ -692,7 +708,13 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 seen_ids.add(event_id)
                 unique_events.append(event)
             elif not event_id:
-                dedup_key = f"{event.get('timestamp')}-{event.get('event_type')}-{event.get('player_id')}-{event.get('period')}-{event.get('time_in_period')}"
+                # Validate all properties exist before creating dedupKey
+                timestamp = event.get('timestamp') if event.get('timestamp') is not None else ''
+                event_type = event.get('event_type') if event.get('event_type') is not None else ''
+                player_id = event.get('player_id') if event.get('player_id') is not None else ''
+                period = event.get('period') if event.get('period') is not None else ''
+                time_in_period = event.get('time_in_period') if event.get('time_in_period') is not None else ''
+                dedup_key = f"{timestamp}-{event_type}-{player_id}-{period}-{time_in_period}"
                 if dedup_key not in seen_ids:
                     seen_ids.add(dedup_key)
                     event["id"] = f"{game_id}-{len(unique_events)}"
@@ -709,7 +731,7 @@ async def get_playbyplay(game_id: str, limit: int = 30):
         )
         events.reverse()
 
-        # Always return ALL crucial events (GOAL, PENALTY, PERIOD_END) regardless of limit
+        # Separate crucial and non-crucial events
         crucial_events = [
             e
             for e in events
@@ -717,15 +739,26 @@ async def get_playbyplay(game_id: str, limit: int = 30):
         ]
 
         if is_complete:
-            all_events = crucial_events
+            # For completed games, return all crucial events up to limit
+            all_events = crucial_events[:limit] if limit > 0 else crucial_events
         else:
+            # For live games, prioritize crucial events but respect limit
             non_crucial_events = [
                 e
                 for e in events
                 if e.get("event_type") not in ["GOAL", "PENALTY", "PERIOD_END"]
             ]
-            limited_non_crucial = non_crucial_events[:4]
-            all_events = crucial_events + limited_non_crucial
+            # Allocate limit: prioritize crucial events, then non-crucial
+            if limit > 0:
+                crucial_count = min(len(crucial_events), limit)
+                non_crucial_count = max(0, limit - crucial_count)
+                limited_crucial = crucial_events[:crucial_count]
+                limited_non_crucial = non_crucial_events[:non_crucial_count]
+                all_events = limited_crucial + limited_non_crucial
+            else:
+                # No limit: return all crucial + 4 non-crucial (original behavior)
+                limited_non_crucial = non_crucial_events[:4]
+                all_events = crucial_events + limited_non_crucial
 
         # Sort final result by timestamp descending
         all_events.sort(

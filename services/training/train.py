@@ -160,14 +160,13 @@ async def main():
 
     # Train model
     logger.info(f"Training {training_config['model_type']} model...")
-    model_config = {
-        "model_type": training_config["model_type"],
-        "random_seed": training_config.get("random_seed", 42),
-        **training_config.get("hyperparameters", {}),
-    }
-
+    # Extract hyperparameters and pass them directly to the model
+    # Don't flatten into model_config - WinProbabilityModel expects them as kwargs
+    hyperparameters = training_config.get("hyperparameters", {})
     model = WinProbabilityModel(
-        model_type=model_config["model_type"], **model_config.get("hyperparameters", {})
+        model_type=training_config["model_type"],
+        random_seed=training_config.get("random_seed", 42),
+        **hyperparameters
     )
     model.train(X_train_split, y_train_split, X_val_split, y_val_split)
 

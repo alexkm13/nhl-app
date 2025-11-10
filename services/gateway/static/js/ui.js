@@ -1,26 +1,109 @@
 async function displayResults(data) {
     const gameDetails = document.getElementById('gameDetails');
+    
+    // Validate required data structure - guard against missing/incomplete data
+    if (!data) {
+        console.error('displayResults called with undefined data');
+        if (gameDetails) {
+            gameDetails.innerHTML = `
+                <div class="back-button-container">
+                    <button class="back-button" onclick="showGamesList()">← Back to Games</button>
+                </div>
+                <div style="text-align: center; padding: 40px; color: #ee8888;">
+                    <div style="font-size: 1.2em; margin-bottom: 10px;">Error Loading Game</div>
+                    <div>Invalid data received</div>
+                </div>
+            `;
+            gameDetails.style.display = 'block';
+            gameDetails.classList.add('show');
+        }
+        return;
+    }
+    
+    // Validate game data
+    if (!data.game) {
+        console.error('displayResults: missing game data', data);
+        if (gameDetails) {
+            gameDetails.innerHTML = `
+                <div class="back-button-container">
+                    <button class="back-button" onclick="showGamesList()">← Back to Games</button>
+                </div>
+                <div style="text-align: center; padding: 40px; color: #ee8888;">
+                    <div style="font-size: 1.2em; margin-bottom: 10px;">Error Loading Game</div>
+                    <div>Game data not available</div>
+                </div>
+            `;
+            gameDetails.style.display = 'block';
+            gameDetails.classList.add('show');
+        }
+            return;
+        }
+    
+    // Validate score data
+    if (!data.score || !data.score.home || !data.score.away) {
+        console.error('displayResults: missing score data', data);
+        if (gameDetails) {
+            gameDetails.innerHTML = `
+                <div class="back-button-container">
+                    <button class="back-button" onclick="showGamesList()">← Back to Games</button>
+                </div>
+                <div style="text-align: center; padding: 40px; color: #ee8888;">
+                    <div style="font-size: 1.2em; margin-bottom: 10px;">Error Loading Game</div>
+                    <div>Score data not available. The game may still be loading.</div>
+                </div>
+            `;
+            gameDetails.style.display = 'block';
+            gameDetails.classList.add('show');
+        }
+        return;
+    }
+    
+    // Validate win probability data
+    if (!data.win_probability) {
+        console.error('displayResults: missing win_probability data', data);
+        // Continue with default probabilities rather than failing completely
+    }
+    
     const game = data.game;
     const score = data.score;
     const situation = data.current_situation;
-    const winProb = data.win_probability;
+    const winProb = data.win_probability || {};
 
-    const homeTeam = score.home.team;
-    const awayTeam = score.away.team;
-    const homeScore = score.home.goals;
-    const awayScore = score.away.goals;
+    // Validate team names exist in score data
+    const homeTeam = score.home.team || 'Home Team';
+    const awayTeam = score.away.team || 'Away Team';
+    const homeScore = score.home.goals !== undefined ? score.home.goals : 0;
+    const awayScore = score.away.goals !== undefined ? score.away.goals : 0;
 
-    const homeProb = winProb[homeTeam];
-    const awayProb = winProb[awayTeam];
+    // Get win probabilities with fallbacks
+    const homeProb = winProb[homeTeam] !== undefined ? winProb[homeTeam] : 50.0;
+    const awayProb = winProb[awayTeam] !== undefined ? winProb[awayTeam] : 50.0;
+
+    // Validate game ID exists
+    if (!data.game.id) {
+        console.error('displayResults: missing game ID', data);
+        if (gameDetails) {
+            gameDetails.innerHTML = `
+                <div class="back-button-container">
+                    <button class="back-button" onclick="showGamesList()">← Back to Games</button>
+                </div>
+                <div style="text-align: center; padding: 40px; color: #ee8888;">
+                    <div style="font-size: 1.2em; margin-bottom: 10px;">Error Loading Game</div>
+                    <div>Game ID not available</div>
+                </div>
+            `;
+            gameDetails.style.display = 'block';
+            gameDetails.classList.add('show');
+        }
+        return;
+    }
 
     const gameId = data.game.id;
     const isLive = data.game.is_live || data.game.game_state === 'LIVE' || data.game.game_state === 'CRIT';
     const isFinal = data.game.game_state === 'OFF' || data.game.game_state === 'FINAL';
     
-    // For completed games, don't start ingestion or trigger refreshes - they already have all their data
-    if (!isFinal) {
-        // Start ingestion for this game ONLY if we haven't started it yet for this view
-        // This ensures the model processes events once when you click on a game, but doesn't restart on refreshes
+    // Start ingestion for all games (live or final) to ensure backfill for offline games
+    // This ensures that even games not watched live will have model predictions and play-by-play data
         if (!ingestionStartedForGames.has(gameId)) {
             ingestionStartedForGames.add(gameId);
             startIngestionForGame(gameId).catch(() => {
@@ -33,7 +116,6 @@ async function displayResults(data) {
             triggerModelRefresh(gameId).catch(() => {
                 // Silently fail
             });
-        }
     }
     
     // Hide games list and show game details
@@ -72,14 +154,33 @@ async function displayResults(data) {
                         const period = data.game.period || 1;
                         const timeInPeriod = data.game.time_in_period || '00:00';
                         
-                        // Calculate elapsed time
+                        // Calculate elapsed time - validate time format before parsing
                         try {
-                            const [minutes, seconds] = timeInPeriod.split(':').map(Number);
+                            if (timeInPeriod && typeof timeInPeriod === 'string' && timeInPeriod.includes(':')) {
+                                const parts = timeInPeriod.split(':');
+                                if (parts.length === 2) {
+                                    const minutes = Number(parts[0]);
+                                    const seconds = Number(parts[1]);
+                                    // Validate that both are finite numbers
+                                    if (Number.isFinite(minutes) && Number.isFinite(seconds)) {
                             const elapsedInPeriod = minutes * 60 + seconds;
                             const periodOffset = (period - 1) * 1200; // 20 minutes per period
                             relativeTime = periodOffset + elapsedInPeriod;
+                                    } else {
+                                        // Invalid numbers, use fallback
+                                        relativeTime = 10;
+                                    }
+                                } else {
+                                    // Invalid format, use fallback
+                                    relativeTime = 10;
+                                }
+                            } else {
+                                // Invalid time format, use fallback
+                                relativeTime = 10;
+                            }
                         } catch (e) {
                             // Fallback: use a small positive value
+                            console.warn('Error parsing timeInPeriod:', timeInPeriod, e);
                             relativeTime = 10;
                         }
                     }
@@ -148,7 +249,7 @@ async function displayResults(data) {
                     if (event.event_type === 'GOAL') {
                         if (event.team === 'HOME') {
                             homeScore++;
-                        } else {
+    } else {
                             awayScore++;
                         }
                     }
@@ -156,8 +257,11 @@ async function displayResults(data) {
                     // Calculate game time in seconds
                     const period = event.period || 1;
                     const timeInPeriod = event.time_in_period || '20:00';
-                    const [minutes, secs] = timeInPeriod.split(':').map(Number);
-                    const timeInPeriodSeconds = minutes * 60 + (secs || 0);
+                    // Check split returns exactly 2 elements before parsing
+                    const timeParts = timeInPeriod.split(':');
+                    const minutes = (timeParts.length === 2) ? Number(timeParts[0]) || 0 : 0;
+                    const secs = (timeParts.length === 2) ? Number(timeParts[1]) || 0 : 0;
+                    const timeInPeriodSeconds = minutes * 60 + secs;
                     
                     // time_in_period is TIME REMAINING in period, so convert to elapsed
                     const periodLength = period <= 3 ? 1200 : 300; // 20 min for regulation, 5 min for OT
@@ -535,26 +639,73 @@ function generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayPro
     let points = [];
     let minTime, maxTime, timeRange;
     
+    // Validate and convert input probabilities to numbers with defaults
+    const homeProbNum = Number(homeProb);
+    const awayProbNum = Number(awayProb);
+    const safeHomeProb = Number.isFinite(homeProbNum) ? homeProbNum : 50.0;
+    const safeAwayProb = Number.isFinite(awayProbNum) ? awayProbNum : 50.0;
+    
     // If no historical data, create a single point at current probability
     if (!historyData || historyData.length === 0) {
         // Create a simple horizontal line at current probability
-        const currentProb = homeProb / 100;
+        // Guard against missing/invalid data
+        const currentProb = Number(safeHomeProb) / 100;
+        if (Number.isFinite(currentProb)) {
         const x1 = padding.left;
         const x2 = width - padding.right;
         const y = padding.top + chartHeight - (currentProb * chartHeight);
+            
+            // Only add points if coordinates are finite
+            if (Number.isFinite(x1) && Number.isFinite(x2) && Number.isFinite(y)) {
         points = [
             { x: x1, y: y },
             { x: x2, y: y }
         ];
+            }
+        }
         minTime = 0;
         maxTime = 3600; // Assume 60 minutes (3 periods * 20 minutes) for a full game
         timeRange = maxTime - minTime;
     } else {
+        // Filter historyData to skip invalid entries
+        // Skip entries where ts is not a number or p_home_win is NaN/undefined
+        const validHistoryData = historyData.filter(d => {
+            const ts = Number(d.ts);
+            const p_home_win = Number(d.p_home_win);
+            return typeof d.ts === 'number' && Number.isFinite(ts) && 
+                   typeof d.p_home_win === 'number' && Number.isFinite(p_home_win) &&
+                   !Number.isNaN(p_home_win);
+        });
+        
+        if (validHistoryData.length === 0) {
+            // No valid historical data, fall back to current probability
+            const currentProb = Number(safeHomeProb) / 100;
+            if (Number.isFinite(currentProb)) {
+                const x1 = padding.left;
+                const x2 = width - padding.right;
+                const y = padding.top + chartHeight - (currentProb * chartHeight);
+                
+                if (Number.isFinite(x1) && Number.isFinite(x2) && Number.isFinite(y)) {
+                    points = [
+                        { x: x1, y: y },
+                        { x: x2, y: y }
+                    ];
+                }
+            }
+            minTime = 0;
+            maxTime = 3600;
+        timeRange = maxTime - minTime;
+    } else {
         // Use relative game time (seconds elapsed from game start)
         // The data should already be in relative time from the backend
-        const times = historyData.map(d => d.ts);
+            const times = validHistoryData.map(d => Number(d.ts)).filter(t => Number.isFinite(t));
+        if (times.length === 0) {
+            minTime = 0;
+            maxTime = 3600;
+        } else {
         minTime = Math.min(...times);
         maxTime = Math.max(...times);
+            }
         
         // Ensure we start from 0 (game start)
         minTime = Math.min(0, minTime);
@@ -571,52 +722,88 @@ function generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayPro
         // Interpolate between points to show smoother changes
         // Add intermediate points every 30 seconds between major events
         const interpolatedData = [];
-        for (let i = 0; i < historyData.length; i++) {
-            interpolatedData.push(historyData[i]);
-            
-            // Add intermediate points between this and next point
-            if (i < historyData.length - 1) {
-                const current = historyData[i];
-                const next = historyData[i + 1];
-                const timeDiff = next.ts - current.ts;
-                const probDiff = next.p_home_win - current.p_home_win;
+            for (let i = 0; i < validHistoryData.length; i++) {
+                const current = validHistoryData[i];
+                const currentTs = Number(current.ts);
+                const currentProb = Number(current.p_home_win);
                 
-                // Add points every 30 seconds if gap is large enough
-                if (timeDiff > 60) {
-                    const numPoints = Math.floor(timeDiff / 30);
-                    for (let j = 1; j <= numPoints; j++) {
-                        const t = current.ts + (timeDiff * j / (numPoints + 1));
-                        const p = current.p_home_win + (probDiff * j / (numPoints + 1));
-                        interpolatedData.push({ ts: t, p_home_win: p });
-                    }
+                // Validate before adding to interpolated data
+                if (Number.isFinite(currentTs) && Number.isFinite(currentProb)) {
+                    interpolatedData.push({ ts: currentTs, p_home_win: currentProb });
                 }
+                
+                // Add intermediate points between this and next point
+                if (i < validHistoryData.length - 1) {
+                    const next = validHistoryData[i + 1];
+                    const nextTs = Number(next.ts);
+                    const nextProb = Number(next.p_home_win);
+                    
+                    // Only interpolate if both points are valid
+                    if (Number.isFinite(nextTs) && Number.isFinite(nextProb)) {
+                        const timeDiff = nextTs - currentTs;
+                        const probDiff = nextProb - currentProb;
+                        
+                        // Add points every 30 seconds if gap is large enough
+                        if (timeDiff > 60 && Number.isFinite(timeDiff)) {
+                            const numPoints = Math.floor(timeDiff / 30);
+                            for (let j = 1; j <= numPoints; j++) {
+                                const t = currentTs + (timeDiff * j / (numPoints + 1));
+                                const p = currentProb + (probDiff * j / (numPoints + 1));
+                                
+                                // Only add if interpolated values are finite
+                                if (Number.isFinite(t) && Number.isFinite(p)) {
+                                    interpolatedData.push({ ts: t, p_home_win: p });
+                                }
+                            }
+                        }
+                    }
             }
         }
         
         // Sort by time to ensure correct order
-        interpolatedData.sort((a, b) => a.ts - b.ts);
+            interpolatedData.sort((a, b) => Number(a.ts) - Number(b.ts));
         
         // Map data points to SVG coordinates
         // X-axis: 0 seconds (game start) = left, maxTime = right
-        points = interpolatedData.map((d, i) => {
-            const x = padding.left + (d.ts - minTime) / timeRange * chartWidth;
-            const y = padding.top + chartHeight - (d.p_home_win * chartHeight);
-            return { x, y };
-        });
+            // Only push points if both x and y are finite numbers
+            points = [];
+            for (const d of interpolatedData) {
+                const ts = Number(d.ts);
+                const p_home_win = Number(d.p_home_win);
+                
+                if (Number.isFinite(ts) && Number.isFinite(p_home_win)) {
+                    const x = padding.left + (ts - minTime) / timeRange * chartWidth;
+                    const y = padding.top + chartHeight - (p_home_win * chartHeight);
+                    
+                    // Only push if both coordinates are finite
+                    if (Number.isFinite(x) && Number.isFinite(y)) {
+                        points.push({ x, y });
+                    }
+                }
+            }
         
         // Add current point if it's not already in the data
         // Check if the last point is close to the current probability
-        const lastDataPoint = interpolatedData[interpolatedData.length - 1];
-        const currentProb = homeProb / 100;
+            const lastDataPoint = interpolatedData.length > 0 ? interpolatedData[interpolatedData.length - 1] : null;
+            const currentProb = Number(safeHomeProb) / 100;
+            
+            // Only add current point if probability is valid
+            if (Number.isFinite(currentProb)) {
         const shouldAddCurrentPoint = !lastDataPoint || 
-            Math.abs(lastDataPoint.p_home_win - currentProb) > 0.01 || 
-            Math.abs(lastDataPoint.ts - maxTime) > 30;
+                    Math.abs(Number(lastDataPoint.p_home_win) - currentProb) > 0.01 || 
+                    Math.abs(Number(lastDataPoint.ts) - maxTime) > 30;
         
-        if (shouldAddCurrentPoint) {
+                if (shouldAddCurrentPoint && Number.isFinite(maxTime) && Number.isFinite(minTime) && Number.isFinite(timeRange) && timeRange > 0) {
             // Use maxTime for current point if available, otherwise use the calculated max
             const currentX = padding.left + (maxTime - minTime) / timeRange * chartWidth;
             const currentY = padding.top + chartHeight - (currentProb * chartHeight);
+                    
+                    // Only push if both coordinates are finite
+                    if (Number.isFinite(currentX) && Number.isFinite(currentY)) {
             points.push({ x: currentX, y: currentY });
+        }
+                }
+            }
         }
     }
     
@@ -649,9 +836,11 @@ function generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayPro
     // Start from 0 (origin) for 1st period, then each subsequent period
     for (let i = 0; i <= periodsInGame && i <= 4; i++) {
         const periodTime = i * periodLength;
-        // Only show markers if they're within the displayed time range
-        if (periodTime <= timeRange) {
+        // Only show markers if they're within the displayed time range and values are finite
+        if (periodTime <= timeRange && Number.isFinite(timeRange) && timeRange > 0 && Number.isFinite(minTime)) {
             const x = padding.left + (periodTime - minTime) / timeRange * chartWidth;
+            // Only add period marker if x coordinate is finite
+            if (Number.isFinite(x)) {
             let label = '';
             if (i === 0) label = '1st';
             else if (i === 1) label = '2nd';
@@ -659,6 +848,7 @@ function generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayPro
             else if (i === 3) label = 'OT';
             else if (i === 4) label = 'SO';
             periods.push({ x, label });
+            }
         }
     }
     
@@ -679,7 +869,8 @@ function generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayPro
     
     // Determine which team is leading based on current probability
     // Use the leading team's color for the line
-    const leadingTeamColor = homeProb > awayProb ? homeColor : (awayProb > homeProb ? awayColor : homeColor);
+    // Use safe probabilities that are guaranteed to be numbers
+    const leadingTeamColor = safeHomeProb > safeAwayProb ? homeColor : (safeAwayProb > safeHomeProb ? awayColor : homeColor);
     
     // Create area BELOW line for home team (fills from bottom to line)
     let homeAreaPath = '';
@@ -702,20 +893,30 @@ function generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayPro
         awayAreaPath += ` L ${points[points.length - 1].x} ${padding.top} Z`;
     }
     
-    // Get the last point for the circle
-    const lastPoint = points[points.length - 1];
+    // Get the last point for the circle - validate it has finite coordinates
+    const lastPoint = points.length > 0 ? points[points.length - 1] : null;
+    const validLastPoint = lastPoint && 
+                          Number.isFinite(Number(lastPoint.x)) && 
+                          Number.isFinite(Number(lastPoint.y)) ? 
+                          { x: Number(lastPoint.x), y: Number(lastPoint.y) } : null;
+    
+    // Validate period markers have finite x coordinates
+    const validPeriods = periods.filter(p => Number.isFinite(Number(p.x))).map(p => ({
+        x: Number(p.x),
+        label: p.label
+    }));
     
     return `
         <div class="win-prob-graph-container">
             <div class="win-prob-graph-labels">
                 <div class="win-prob-graph-team-left">
                     ${awayLogo ? `<img src="${awayLogo}" alt="${awayTeam}" class="win-prob-graph-logo" onerror="this.style.display='none'">` : ''}
-                    <span class="win-prob-graph-percentage">${awayProb.toFixed(1)}%</span>
+                    <span class="win-prob-graph-percentage">${safeAwayProb.toFixed(1)}%</span>
                     <span class="win-prob-graph-abbrev">-- ${awayAbbrevDisplay}</span>
                 </div>
                 <div class="win-prob-graph-team-right">
                     <span class="win-prob-graph-abbrev">${homeAbbrevDisplay} --</span>
-                    <span class="win-prob-graph-percentage">${homeProb.toFixed(1)}%</span>
+                    <span class="win-prob-graph-percentage">${safeHomeProb.toFixed(1)}%</span>
                     ${homeLogo ? `<img src="${homeLogo}" alt="${homeTeam}" class="win-prob-graph-logo" onerror="this.style.display='none'">` : ''}
                 </div>
             </div>
@@ -731,19 +932,19 @@ function generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayPro
                 <line x1="${padding.left}" y1="${padding.top + chartHeight / 2}" x2="${width - padding.right}" y2="${padding.top + chartHeight / 2}" stroke="#333" stroke-width="1" stroke-dasharray="2,2"/>
                 
                 <!-- Away team area (above line) - neutral gray -->
-                <path d="${awayAreaPath}" fill="#444" opacity="0.25"/>
+                ${awayAreaPath ? `<path d="${awayAreaPath}" fill="#444" opacity="0.25"/>` : ''}
                 
                 <!-- Home team area (below line) - neutral gray -->
-                <path d="${homeAreaPath}" fill="#444" opacity="0.4"/>
+                ${homeAreaPath ? `<path d="${homeAreaPath}" fill="#444" opacity="0.4"/>` : ''}
                 
                 <!-- Home team probability line - leading team's color (the "thick part") -->
-                <path d="${path}" fill="none" stroke="${leadingTeamColor}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                ${path ? `<path d="${path}" fill="none" stroke="${leadingTeamColor}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>` : ''}
                 
                 <!-- Large circle at the end - leading team's color -->
-                ${lastPoint ? `<circle cx="${lastPoint.x}" cy="${lastPoint.y}" r="6" fill="${leadingTeamColor}" stroke="${leadingTeamColor}" stroke-width="2"/>` : ''}
+                ${validLastPoint ? `<circle cx="${validLastPoint.x}" cy="${validLastPoint.y}" r="6" fill="${leadingTeamColor}" stroke="${leadingTeamColor}" stroke-width="2"/>` : ''}
                 
                 <!-- Period markers -->
-                ${periods.map(p => `
+                ${validPeriods.map(p => `
                     <line x1="${p.x}" y1="${padding.top}" x2="${p.x}" y2="${height - padding.bottom}" stroke="#333" stroke-width="0.5" stroke-dasharray="2,2"/>
                     <text x="${p.x}" y="${height - 10}" text-anchor="start" font-size="10" fill="#888">${p.label}</text>
                 `).join('')}
@@ -815,7 +1016,13 @@ function renderFeedEvents(events, homeTeam, awayTeam, homeLogo, awayLogo, isLive
             uniqueEvents.push(event);
         } else if (!eventId) {
             // If no ID, create one for deduplication
-            const dedupKey = `${event.timestamp}-${event.event_type}-${event.player_id}-${event.period}-${event.time_in_period}`;
+            // Validate all properties exist before creating dedupKey
+            const timestamp = event.timestamp != null ? event.timestamp : '';
+            const eventType = event.event_type != null ? event.event_type : '';
+            const playerId = event.player_id != null ? event.player_id : '';
+            const period = event.period != null ? event.period : '';
+            const timeInPeriod = event.time_in_period != null ? event.time_in_period : '';
+            const dedupKey = `${timestamp}-${eventType}-${playerId}-${period}-${timeInPeriod}`;
             if (!seenIds.has(dedupKey)) {
                 seenIds.add(dedupKey);
                 event.id = `${gameId}-${uniqueEvents.length}`;
@@ -1083,11 +1290,18 @@ function showGamesList() {
         mainContainer.style.display = 'block';
     }
     
-    // Hide game details
+    // Hide and clean up game details to prevent memory leaks
     const gameDetails = document.getElementById('gameDetails');
     if (gameDetails) {
         gameDetails.style.display = 'none';
         gameDetails.classList.remove('show');
+        // Clear innerHTML to free up memory from large DOM structures
+        // Use a timeout to avoid visual artifacts during transition
+        setTimeout(() => {
+            if (gameDetails.style.display === 'none') {
+                gameDetails.innerHTML = '';
+            }
+        }, 500);
     }
     
     // Scroll to top

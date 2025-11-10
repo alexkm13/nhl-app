@@ -1,16 +1,26 @@
 async function startIngestionForGame(gameId) {
     try {
-        // Check if game is completed - don't start ingestion for completed games
+        // Check game state to determine if this is live or backfill ingestion
         const gameCheckResponse = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`);
+        let isFinal = false;
+
         if (gameCheckResponse.ok) {
             const gameData = await gameCheckResponse.json();
-            const isFinal = gameData.game && (gameData.game.game_state === 'OFF' || gameData.game.game_state === 'FINAL');
-            if (isFinal) {
-                // Game is completed - don't start ingestion, just display results
-                if (currentGameId === gameId) {
-                    displayResults(gameData);
+
+            // Validate gameData structure before using it
+            if (gameData && gameData.game) {
+                isFinal = gameData.game.game_state === 'OFF' || gameData.game.game_state === 'FINAL';
+
+                if (isFinal) {
+                    // For final games, this is a backfill operation
+                    console.log(`[Backfill] Starting backfill for completed game ${gameId}`);
+                } else {
+                    // For live games, this is normal ingestion
+                    console.log(`[Ingestion] Starting ingestion for live game ${gameId}`);
                 }
-                return;
+            } else {
+                console.warn('startIngestionForGame: invalid gameData structure', gameData);
+                // Continue with ingestion attempt even if data is incomplete
             }
         }
         
@@ -70,22 +80,35 @@ async function triggerModelRefresh(gameId) {
 }
 
 
-async function pollForResults(gameId) {
+async function pollForResults(gameId, retryCount = 0) {
+    const MAX_RETRIES = 60; // Maximum 5 minutes of polling (60 * 5 seconds)
+
+    // Check if we've exceeded max retries
+    if (retryCount >= MAX_RETRIES) {
+        console.error(`Max retries exceeded for game ${gameId}`);
+        const placeholder = document.getElementById('game-content-placeholder');
+        if (placeholder) {
+            placeholder.innerHTML = `
+                <div style="text-align: center; padding: 40px; color: #ee8888;">
+                    <div style="font-size: 1.2em; margin-bottom: 10px;">Timeout</div>
+                    <div>Game data took too long to load. Please try again.</div>
+                </div>
+            `;
+        }
+        return;
+    }
+
     try {
-        // Check if game is completed - stop polling for completed games
+        // Check if game is completed - for final games, wait for backfill to complete
         const gameCheckResponse = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`);
         if (gameCheckResponse.ok) {
             const gameData = await gameCheckResponse.json();
             const isFinal = gameData.game && (gameData.game.game_state === 'OFF' || gameData.game.game_state === 'FINAL');
-            if (isFinal) {
-                // Game is completed - stop polling and display results if we haven't already
-                if (currentGameId === gameId && (!gameDataCache[gameId] || gameDataCache[gameId].game.id !== gameData.game.id)) {
-                    displayResults(gameData);
-                }
-                return;
-            }
+
+            // For final games, only stop polling if we have a prediction
+            // Otherwise continue polling to wait for backfill to complete
         }
-        
+
         const statusResponse = await fetch(`${API_BASE}/v1/games/${gameId}/status`);
         
         if (!statusResponse.ok) {
@@ -101,7 +124,7 @@ async function pollForResults(gameId) {
         }
 
         if (statusData.has_prediction) {
-            await fetchResults(gameId);
+            await fetchResults(gameId, retryCount);
             return;
         }
 
@@ -111,7 +134,7 @@ async function pollForResults(gameId) {
             if (placeholder) {
                 placeholder.innerHTML = '<div class="spinner"></div><div style="text-align: center; color: #aaaaaa; margin-top: 20px;">Ingestion in progress. Waiting for results...</div>';
             }
-            setTimeout(() => pollForResults(gameId), 5000);
+            setTimeout(() => pollForResults(gameId, retryCount + 1), 5000);
             return;
         }
 
@@ -135,7 +158,7 @@ async function pollForResults(gameId) {
         if (placeholder) {
             placeholder.innerHTML = '<div class="spinner"></div><div style="text-align: center; color: #aaaaaa; margin-top: 20px;">Processing... Please wait</div>';
         }
-        setTimeout(() => pollForResults(gameId), 5000);
+        setTimeout(() => pollForResults(gameId, retryCount + 1), 5000);
     } catch (error) {
         console.error('Status check error:', error);
         const errorMsg = error.message || 'Network error';

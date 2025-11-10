@@ -101,10 +101,12 @@ class ABTestRouter:
             # Random routing if no identifier
             hash_key = str(random.random())
 
-        # Hash to 0-100 range
-        hash_value = hash(hash_key) % 100
-        if hash_value < 0:
-            hash_value = -hash_value
+        # Use deterministic SHA256 hash instead of Python's built-in hash()
+        # Python's hash() is randomized per process, breaking consistent routing
+        import hashlib
+        hash_bytes = hashlib.sha256(hash_key.encode('utf-8')).digest()
+        # Convert to integer and map to 0-100 range
+        hash_value = int.from_bytes(hash_bytes[:4], byteorder='big') % 100
 
         # Route based on cumulative percentages
         cumulative = 0.0
@@ -143,7 +145,7 @@ class ABTestTracker:
         """
         self.db_url = db_url or os.environ.get("DATABASE_URL", "")
 
-    def log_prediction(
+    def _log_prediction_sync(
         self,
         game_id: str,
         model_id: str,
@@ -153,8 +155,8 @@ class ABTestTracker:
         timestamp: Optional[datetime] = None,
     ):
         """
-        Log a prediction for A/B testing analysis.
-
+        Synchronous implementation of log_prediction (runs in executor).
+        
         Args:
             game_id: Game identifier
             model_id: Model ID used
@@ -216,6 +218,42 @@ class ABTestTracker:
         except Exception as e:
             # Log error but don't fail prediction
             print(f"[ab_test] Error logging prediction: {e}")
+
+    async def log_prediction(
+        self,
+        game_id: str,
+        model_id: str,
+        variant_name: str,
+        prediction: float,
+        features: Dict,
+        timestamp: Optional[datetime] = None,
+    ):
+        """
+        Log a prediction for A/B testing analysis (async wrapper).
+        
+        Runs the blocking database call in an executor to avoid stalling the event loop.
+
+        Args:
+            game_id: Game identifier
+            model_id: Model ID used
+            variant_name: Variant name (for grouping)
+            prediction: Prediction value
+            features: Features used for prediction
+            timestamp: Timestamp of prediction
+        """
+        import asyncio
+        loop = asyncio.get_event_loop()
+        # Run blocking DB call in executor to avoid stalling event loop
+        await loop.run_in_executor(
+            None,
+            self._log_prediction_sync,
+            game_id,
+            model_id,
+            variant_name,
+            prediction,
+            features,
+            timestamp,
+        )
 
     def get_metrics(
         self,

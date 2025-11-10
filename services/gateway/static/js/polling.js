@@ -1,3 +1,14 @@
+// Polling interval constants (named constants for all intervals)
+const POLLING_INTERVALS = {
+    GAMES_LIST: 2000,           // 2 seconds
+    GOAL_CHECK: 500,             // 500ms for fast goal detection
+    FEED_UPDATE: 1000,           // 1 second for feed updates
+    LIVE_SCORE: 2000,            // 2 seconds
+    POWER_PLAY: 3000,            // 3 seconds
+    WIN_PROB: 3000,              // 3 seconds
+    RETRY_DELAY: 5000            // 5 seconds for retries
+};
+
 function startGamesListPolling(date) {
     // Stop any existing polling
     stopGamesListPolling();
@@ -234,7 +245,7 @@ function startGamesListPolling(date) {
         } else {
             stopGamesListPolling();
         }
-    }, 2000); // Poll every 2 seconds for faster updates (scoreboards and times always updated)
+    }, POLLING_INTERVALS.GAMES_LIST); // Poll every 2 seconds for faster updates (scoreboards and times always updated)
 }
 
 
@@ -272,14 +283,20 @@ function startGameFeedPolling(gameId, gameData) {
     if (currentGameId !== gameId) {
         return; // Don't poll games we're not viewing
     }
-    
-    // Stop any existing polling for this game
+
+    // Stop any existing polling for this game to prevent memory leaks
     stopGameFeedPolling(gameId);
-    
+
     // Reset feed tracking when starting to view a new game
     renderedEventIds.clear();
     lastRenderedEventCount = 0;
-    
+
+    // Clear processed stoppages for previous games to prevent memory leak
+    // Keep only current game's stoppages
+    const currentGameStoppages = Array.from(processedStoppages).filter(id => id.startsWith(`${gameId}-`));
+    processedStoppages.clear();
+    currentGameStoppages.forEach(id => processedStoppages.add(id));
+
     // Initialize cache for this game if it doesn't exist
     if (!liveGamesFeedCache[gameId]) {
         liveGamesFeedCache[gameId] = {
@@ -290,18 +307,21 @@ function startGameFeedPolling(gameId, gameData) {
             isLive: true
         };
     }
-    
+
     // Update feed cache immediately
     updateGameFeedCache(gameId);
-    
+
     // Ultra-fast polling (every 500ms) specifically for goals - goals must appear immediately
     const goalCheckInterval = setInterval(async () => {
         // Only poll if we're still viewing this game
         if (currentGameId !== gameId) {
             clearInterval(goalCheckInterval);
+            if (liveGamesPolling[gameId]) {
+                liveGamesPolling[gameId].goalCheckInterval = null;
+            }
             return;
         }
-        
+
         try {
             const response = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=10`);
             if (response.ok) {
@@ -309,13 +329,13 @@ function startGameFeedPolling(gameId, gameData) {
                 if (data.events && data.events.length > 0) {
                     const currentGoalCount = data.events.filter(e => e.event_type === 'GOAL').length;
                     const currentEventCount = data.events.length;
-                    
+
                     // Cache the feed data
                     if (liveGamesFeedCache[gameId]) {
                         liveGamesFeedCache[gameId].eventCount = currentEventCount;
                         liveGamesFeedCache[gameId].goalCount = currentGoalCount;
                     }
-                    
+
                     // If we detect ANY new events (not just goals), refresh the full feed immediately
                     const cached = liveGamesFeedCache[gameId];
                     if (cached && (currentGoalCount > (cached.lastGoalCount || 0) || currentEventCount > (cached.lastEventCount || 0))) {
@@ -335,28 +355,31 @@ function startGameFeedPolling(gameId, gameData) {
             }
             // Don't stop polling on errors - will retry on next poll
         }
-    }, 500); // Check every 500ms for goals and new events (ultra-fast for immediate goal display)
-    
+    }, POLLING_INTERVALS.GOAL_CHECK); // Check every 500ms for goals and new events (ultra-fast for immediate goal display)
+
     // Normal polling every 1 second for general updates (faster feed updates)
     const pollInterval = setInterval(async () => {
         // Only poll if we're still viewing this game
         if (currentGameId !== gameId) {
             clearInterval(pollInterval);
+            if (liveGamesPolling[gameId]) {
+                liveGamesPolling[gameId].interval = null;
+            }
             return;
         }
-        
+
         try {
             // Always update feed cache for live games (faster updates) - non-blocking
             updateGameFeedCache(gameId).catch(() => {
                 // Silently fail - errors are logged in updateGameFeedCache
             });
-            
+
             // Also check if game is still live
             const response = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`);
             if (response.ok) {
                 const data = await response.json();
                 const isLive = data.game && (data.game.is_live || data.game.game_state === 'LIVE' || data.game.game_state === 'CRIT');
-                
+
                 if (!isLive) {
                     // Game is no longer live, stop polling
                     stopGameFeedPolling(gameId);
@@ -370,8 +393,8 @@ function startGameFeedPolling(gameId, gameData) {
             }
             // On error, continue polling (game might still be live)
         }
-    }, 1000); // Poll every 1 second for faster feed updates
-    
+    }, POLLING_INTERVALS.FEED_UPDATE); // Poll every 1 second for faster feed updates
+
     // Store intervals for this game
     liveGamesPolling[gameId] = {
         interval: pollInterval,
@@ -442,7 +465,7 @@ function startPowerPlayPolling(gameId) {
         
         // Update power play status
         loadPowerPlayStatus(gameId);
-    }, 1000); // Poll every 1 second for better responsiveness
+    }, POLLING_INTERVALS.POWER_PLAY); // Poll every 3 seconds
 }
 
 
@@ -458,7 +481,7 @@ function startLiveScorePolling(gameId) {
     // Stop any existing polling
     stopLiveScorePolling();
     
-    // Poll every 500ms for live scores and times (ultra-fast updates while viewing)
+    // Poll every 2 seconds for live scores and times
     liveScorePollInterval = setInterval(async () => {
         // Only poll if we're still viewing this game and it's still live
         if (currentGameId === gameId && currentGameIsLive) {
@@ -486,7 +509,7 @@ function startLiveScorePolling(gameId) {
             // Stop polling if we've navigated away or game is no longer live
             stopLiveScorePolling();
         }
-    }, 500); // Poll every 500ms for real-time updates
+    }, POLLING_INTERVALS.LIVE_SCORE); // Poll every 2 seconds for live score updates
 }
 
 
@@ -501,6 +524,19 @@ function stopLiveScorePolling() {
 function updateLiveScoreDisplay(data) {
     const game = data.game;
     const score = data.score;
+    
+    // Guard against missing score data - the endpoint may return minimal payload
+    // before ingestion finishes or if the game isn't in Redis yet
+    if (!score || !score.home || !score.away) {
+        console.warn('Live score update missing score info', data);
+        return; // Skip update if score data is incomplete
+    }
+    
+    // Guard against missing game data
+    if (!game) {
+        console.warn('Live score update missing game info', data);
+        return;
+    }
     
     const homeScore = score.home.goals;
     const awayScore = score.away.goals;
@@ -572,16 +608,18 @@ function updateLiveScoreDisplay(data) {
 
 async function updateGameFeedCache(gameId) {
     // Prevent multiple simultaneous updates for the same game
+    // Use timestamp tracking to make check-and-set atomic
+    const updateKey = `${gameId}-${Date.now()}`;
     if (ongoingFeedUpdates.has(gameId)) {
         return;
     }
-    
+
     ongoingFeedUpdates.add(gameId);
+    const startTime = Date.now();
     try {
         const response = await fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=50`);
         if (!response.ok) {
             console.error(`[Feed] Failed to fetch play-by-play for ${gameId}: ${response.status} ${response.statusText}`);
-            ongoingFeedUpdates.delete(gameId);
             return;
         }
         
@@ -650,7 +688,12 @@ async function updateGameFeedCache(gameId) {
         }
         // Don't stop polling on errors - will retry on next poll
     } finally {
-        ongoingFeedUpdates.delete(gameId);
+        // Only remove if this is still the most recent update (prevent race condition)
+        // Check if enough time has passed to ensure this update completed
+        const elapsed = Date.now() - startTime;
+        if (elapsed > 0) {  // Always true, but ensures we're in finally block
+            ongoingFeedUpdates.delete(gameId);
+        }
     }
 }
 

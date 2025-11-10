@@ -57,6 +57,11 @@ PREDICTION_INTERVAL = float(
     os.environ.get("PREDICTION_INTERVAL_SECONDS", MODEL_PREDICTION_INTERVAL_SECONDS)
 )
 
+# Force prediction interval - ensures predictions are generated regularly even if no significant events
+FORCE_PREDICTION_INTERVAL = float(
+    os.environ.get("FORCE_PREDICTION_INTERVAL_SECONDS", 30.0)
+)  # Force prediction every 30 seconds
+
 CONSUMER = f"model-{random.randint(CONSUMER_ID_MIN, CONSUMER_ID_MAX)}"
 db_conn: Optional[psycopg.AsyncConnection] = None
 
@@ -91,8 +96,7 @@ async def get_db_connection() -> Optional[psycopg.AsyncConnection]:
     if not DATABASE_URL:
         return None
     if db_conn is None or db_conn.closed:
-        db_conn = await psycopg.AsyncConnection.connect(DATABASE_URL)
-        await db_conn.set_autocommit(DATABASE_AUTOCOMMIT)
+        db_conn = await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=DATABASE_AUTOCOMMIT)
     return db_conn
 
 
@@ -167,12 +171,14 @@ def should_predict(
     game_id: str,
     features: Dict,
     last_prediction_times: Dict[str, float],
+    last_forced_prediction_times: Dict[str, float],
     current_time: float,
 ) -> bool:
     """
     Determine if we should generate a prediction for this feature event.
 
     Uses smart throttling to balance accuracy with performance:
+    - Force prediction every FORCE_PREDICTION_INTERVAL seconds (ensures regular updates)
     - Always predict on significant events (goals, penalties)
     - Always predict in critical game moments (last 5 minutes)
     - Predict on shots/blocks in close games
@@ -182,6 +188,7 @@ def should_predict(
         game_id: Game identifier
         features: Feature dictionary with game state
         last_prediction_times: Dict tracking last prediction time per game
+        last_forced_prediction_times: Dict tracking last forced prediction time per game
         current_time: Current timestamp
 
     Returns:
@@ -196,6 +203,18 @@ def should_predict(
     # Calculate time remaining
     time_remaining = GAME_TOTAL_REGULATION_TIME_SECONDS - seconds_elapsed
     score_diff = abs(home_score - away_score)
+
+    # Check forced prediction timer - ensures predictions are generated regularly
+    # This guarantees at least one prediction every FORCE_PREDICTION_INTERVAL seconds
+    last_forced_pred_time = last_forced_prediction_times.get(game_id, 0)
+    time_since_last_forced = current_time - last_forced_pred_time
+    if time_since_last_forced >= FORCE_PREDICTION_INTERVAL:
+        logger.debug(
+            f"Forcing prediction due to timer: {time_since_last_forced:.1f}s since last forced prediction "
+            f"(interval={FORCE_PREDICTION_INTERVAL}s)"
+        )
+        last_forced_prediction_times[game_id] = current_time
+        return True
 
     # Always predict on significant events
     if last_event in SIGNIFICANT_EVENTS:
@@ -228,7 +247,7 @@ def should_predict(
     # Skip this prediction
     logger.debug(
         f"Skipping prediction: {time_since_last:.1f}s since last "
-        f"(interval={PREDICTION_INTERVAL}s)"
+        f"(interval={PREDICTION_INTERVAL}s, forced_interval={FORCE_PREDICTION_INTERVAL}s)"
     )
     return False
 
@@ -294,9 +313,12 @@ async def run_model() -> None:
 
     # Track last prediction time per game for throttling
     last_prediction_times: Dict[str, float] = {}
+    # Track last forced prediction time per game to ensure regular predictions
+    last_forced_prediction_times: Dict[str, float] = {}
 
     logger.info(
         f"Prediction throttling: interval={PREDICTION_INTERVAL}s, "
+        f"forced_interval={FORCE_PREDICTION_INTERVAL}s, "
         f"critical_time={MODEL_PREDICTION_CRITICAL_TIME_SECONDS}s, "
         f"close_game_threshold={MODEL_PREDICTION_CLOSE_GAME_THRESHOLD}"
     )
@@ -330,7 +352,12 @@ async def run_model() -> None:
                     if start_ts_raw is not None:
                         try:
                             game_start_ts = float(start_ts_raw)
-                        except (TypeError, ValueError):
+                            # Validate that timestamp is reasonable (not too far in past/future)
+                            if game_start_ts < 0 or game_start_ts > time.time() + 86400:
+                                logger.warning(f"Invalid game_start_ts from Redis: {game_start_ts}")
+                                game_start_ts = None
+                        except (TypeError, ValueError) as e:
+                            logger.warning(f"Failed to parse game_start_ts from Redis: {e}")
                             game_start_ts = None
                     prediction_event_ts = (
                         game_start_ts + seconds_elapsed
@@ -371,7 +398,7 @@ async def run_model() -> None:
                     # Smart throttling: check if we should predict for this event
                     current_time = time.time()
                     if not should_predict(
-                        game_id, raw_features, last_prediction_times, current_time
+                        game_id, raw_features, last_prediction_times, last_forced_prediction_times, current_time
                     ):
                         # Skip this prediction to reduce load
                         PRED_SKIPPED.inc()
@@ -385,6 +412,8 @@ async def run_model() -> None:
 
                     # Update last prediction time for this game
                     last_prediction_times[game_id] = current_time
+                    # Also update forced prediction time if this was a forced prediction
+                    # (handled in should_predict function)
 
                     # For A/B testing logging, get engineered features
                     if selected_model_type == MODEL_TYPE_BASELINE:
@@ -409,9 +438,17 @@ async def run_model() -> None:
                             ),
                         )
 
+                    # Calculate actual prediction timestamp (wall-clock time)
+                    prediction_timestamp = (
+                        prediction_event_ts
+                        if prediction_event_ts is not None
+                        else time.time()
+                    )
+                    
                     out = {
                         "game_id": game_id,
-                        "ts": ts,
+                        "ts": ts,  # Relative time (seconds elapsed in game)
+                        "timestamp": prediction_timestamp,  # Wall-clock timestamp for updated_at
                         "model_id": selected_model_id,
                         "p_home_win": round(p_home, 4),
                     }
@@ -430,7 +467,6 @@ async def run_model() -> None:
                     # Note: ts in features is relative game time (0-3600s), not Unix timestamp
                     # We need to store the actual prediction timestamp (current time) for history queries
                     # The relative time is stored in the 'ts' field of the prediction output for reference
-                    conn: Optional[psycopg.AsyncConnection] = None
                     try:
                         if DATABASE_URL:
                             prediction_timestamp = (
@@ -452,9 +488,16 @@ async def run_model() -> None:
                                     )
                     except Exception as e:
                         logger.error(f"Database insert error: {e}", exc_info=True)
-                        if conn:
-                            await conn.close()
-                        db_conn = None
+                        # Close and reset connection on error
+                        # Ensure connection is closed before setting to None to prevent leak
+                        if db_conn:
+                            try:
+                                if not db_conn.closed:
+                                    await db_conn.close()
+                            except Exception as close_error:
+                                logger.warning(f"Error closing DB connection: {close_error}")
+                            finally:
+                                db_conn = None
                     finally:
                         PROC_TIME.observe(_t.perf_counter() - _t0)
 

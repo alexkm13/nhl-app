@@ -1,5 +1,18 @@
 // Utility functions
 
+// Helper function to escape HTML to prevent XSS attacks
+function escapeHtml(unsafe) {
+    if (typeof unsafe !== 'string') {
+        return String(unsafe || '');
+    }
+    return unsafe
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
 // Helper function to adjust color brightness for better contrast
 function adjustColorBrightness(color, percent) {
     const num = parseInt(color.replace("#",""), 16);
@@ -32,5 +45,21 @@ function showStatus(message, type) {
             statusEl.style.display = 'none';
         }, 3000);
     }
+}
+
+// Time conversion utility function (DRY principle)
+// Parses MM:SS time string and returns seconds
+// Returns 0 if format is invalid
+function parseTimeToSeconds(timeStr) {
+    if (!timeStr || typeof timeStr !== 'string') {
+        return 0;
+    }
+    const parts = timeStr.split(':');
+    if (parts.length !== 2) {
+        return 0;
+    }
+    const minutes = Number(parts[0]) || 0;
+    const seconds = Number(parts[1]) || 0;
+    return minutes * 60 + seconds;
 }
 

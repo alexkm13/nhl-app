@@ -253,8 +253,19 @@ async def start_game_ingestion(game_id: str):
             },
         )
 
-        # Run ingestion in background
-        asyncio.create_task(run_ingestion(game_id, r))
+        # Run ingestion in background with error handling
+        task = asyncio.create_task(run_ingestion(game_id, r))
+
+        # Add callback to log any uncaught exceptions
+        def handle_task_exception(task):
+            try:
+                task.result()
+            except Exception as e:
+                print(f"[gateway] Uncaught exception in background ingestion task: {e}")
+                import traceback
+                traceback.print_exc()
+
+        task.add_done_callback(handle_task_exception)
 
         return {
             "message": f"Started ingestion for {away_team} @ {home_team}",
@@ -378,13 +389,24 @@ async def get_winprob_history(game_id: str):
                 # Filter out invalid timestamps (e.g., 1970-01-01 from old bug)
                 data = []
                 for ts, p_home_win in rows:
-                    ts_timestamp = float(ts.timestamp())
+                    # Skip NULL or invalid values
+                    if ts is None or p_home_win is None:
+                        continue
+
+                    try:
+                        ts_timestamp = float(ts.timestamp())
+                        p_home_win_float = float(p_home_win)
+                    except (AttributeError, TypeError, ValueError):
+                        # Skip invalid data types
+                        continue
 
                     # Skip timestamps that are clearly wrong (before 2020 or way in future)
                     # Valid predictions should be recent (after 2020)
                     if ts_timestamp < 1577836800:  # Before 2020-01-01
                         continue
-                    if ts_timestamp > time.time() + 86400:  # More than 1 day in future
+                    # Tighten future timestamp check - not allow future times (only allow small buffer for clock skew)
+                    current_time = time.time()
+                    if ts_timestamp > current_time + 60:  # More than 60 seconds in future (allow small clock skew)
                         continue
 
                     if game_start_ts:
@@ -395,14 +417,14 @@ async def get_winprob_history(game_id: str):
                             data.append(
                                 {
                                     "ts": max(0, relative_time),
-                                    "p_home_win": float(p_home_win),
+                                    "p_home_win": p_home_win_float,
                                 }
                             )
                     else:
                         # No game start time available - use timestamp as-is if reasonable
                         # This shouldn't happen in normal operation
                         data.append(
-                            {"ts": ts_timestamp, "p_home_win": float(p_home_win)}
+                            {"ts": ts_timestamp, "p_home_win": p_home_win_float}
                         )
 
                 return {"game_id": game_id, "data": data}
@@ -1863,7 +1885,9 @@ async def get_winprob_friendly(game_id: str):
             else "Medium"
             if max(p_home, p_away) > 0.6
             else "Low",
-            "updated_at": float(data["ts"]),
+            # Use timestamp (wall-clock time) if available, otherwise fall back to ts (relative time)
+            # model_svc now stores both ts (relative) and timestamp (wall-clock)
+            "updated_at": float(data.get("timestamp", data.get("ts", time.time()))),
         }
     except Exception:
         raise HTTPException(status_code=404, detail="No prediction yet for this game")

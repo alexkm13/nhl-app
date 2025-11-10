@@ -351,11 +351,28 @@ def parse_situation_code(situation: str) -> tuple:
     Returns:
         tuple: (home_skaters, away_skaters)
     """
-    if len(situation) >= 4:
-        try:
+    # Move bounds check before int conversion to improve error handling
+    if not situation or len(situation) < 4:
+        return 5, 5  # Default to even strength
+    
+    try:
+        # Validate indices exist before accessing
+        if len(situation) >= 2 and situation[1].isdigit():
             away_skaters = int(situation[1])
+            # Validate away_skaters is in valid range (0-6)
+            if away_skaters < 0 or away_skaters > 6:
+                away_skaters = 5
+        else:
+            away_skaters = 5
+        
+        if len(situation) >= 4 and situation[3].isdigit():
             home_skaters = int(situation[3])
-            return home_skaters, away_skaters
-        except (ValueError, IndexError):
-            pass
-    return 5, 5  # Default to even strength
+            # Validate home_skaters is in valid range (0-6)
+            if home_skaters < 0 or home_skaters > 6:
+                home_skaters = 5
+        else:
+            home_skaters = 5
+        
+        return home_skaters, away_skaters
+    except (ValueError, IndexError, TypeError):
+        return 5, 5  # Default to even strength on any error

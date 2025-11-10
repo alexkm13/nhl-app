@@ -49,7 +49,13 @@ def engineer_features(features: dict) -> dict:
     is_shootout = 1 if period > 4 else 0
 
     # Strength features (matching training pipeline)
+    # One-hot encode strength to match training pipeline's pd.get_dummies()
+    # Training creates columns like strength_EV, strength_PK, strength_PP, strength_EN, strength_ENPP
+    strength_EV = 1 if strength == "EV" else 0
     strength_PK = 1 if strength == "PK" else 0
+    strength_PP = 1 if strength == "PP" else 0
+    strength_EN = 1 if strength == "EN" else 0
+    strength_ENPP = 1 if strength == "ENPP" else 0
 
     home_pp = 1 if strength in ["PP", "ENPP"] else 0
     away_pp = 1 if strength == "PK" else 0
@@ -89,7 +95,12 @@ def engineer_features(features: dict) -> dict:
         "is_regulation": is_regulation,
         "is_overtime": is_overtime,
         "is_shootout": is_shootout,
+        # One-hot encoded strength columns (matching training pipeline)
+        "strength_EV": strength_EV,
         "strength_PK": strength_PK,
+        "strength_PP": strength_PP,
+        "strength_EN": strength_EN,
+        "strength_ENPP": strength_ENPP,
         "home_pp": home_pp,
         "away_pp": away_pp,
         "home_pk": home_pk,

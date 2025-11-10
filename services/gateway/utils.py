@@ -351,7 +351,9 @@ async def run_ingestion(game_id: str, redis: Redis):
             elif mapped_type == "HIT":
                 player_id = details.get("hittingPlayerId")
             elif mapped_type == "PENALTY":
-                player_id = details.get("playerId")
+                # Use committedByPlayerId for penalties (not playerId)
+                # This matches the correct usage in playbyplay.py
+                player_id = details.get("committedByPlayerId")
 
             # Create event payload matching GameEvent model structure
             # This format is what feature_state expects

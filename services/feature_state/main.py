@@ -64,8 +64,7 @@ async def get_db_connection() -> Optional[psycopg.AsyncConnection]:
     if not DATABASE_URL:
         return None
     if db_conn is None or db_conn.closed:
-        db_conn = await psycopg.AsyncConnection.connect(DATABASE_URL)
-        await db_conn.set_autocommit(DATABASE_AUTOCOMMIT)
+        db_conn = await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=DATABASE_AUTOCOMMIT)
     return db_conn
 
 
@@ -151,7 +150,6 @@ async def process_events() -> None:
                     features = state.model_dump()
 
                     # Persist to TimescaleDB using a shared connection
-                    conn: Optional[psycopg.AsyncConnection] = None
                     try:
                         conn = await get_db_connection()
                         if conn:
@@ -169,8 +167,12 @@ async def process_events() -> None:
                                 )
                     except Exception as e:
                         logger.error(f"Database insert error: {e}", exc_info=True)
-                        if conn:
-                            await conn.close()
+                        # Close and reset the global connection on error
+                        if db_conn:
+                            try:
+                                await db_conn.close()
+                            except Exception:
+                                pass
                         db_conn = None
 
                     await r.xadd(STREAM_FEATURES, {"json": json.dumps(features)})

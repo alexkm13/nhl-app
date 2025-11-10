@@ -74,13 +74,13 @@ async function loadGamesList(date = null) {
                     const awayRow = awayIsWinner ?
                         `<div class="game-score-row winner">
                             <div class="game-winner-indicator">▶</div>
-                            <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="game-team-logo" onerror="this.style.display='none'">
-                            <div class="game-team-name">${game.away_team_name || game.away_team}</div>
+                            <img src="${escapeHtml(game.away_team_logo || '')}" alt="${escapeHtml(game.away_team_name)}" class="game-team-logo" onerror="this.style.display='none'">
+                            <div class="game-team-name">${escapeHtml(game.away_team_name || game.away_team)}</div>
                             <div class="game-team-score">${awayScore}</div>
                         </div>` :
                         `<div class="game-score-row loser">
-                            <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="game-team-logo" onerror="this.style.display='none'">
-                            <div class="game-team-name">${game.away_team_name || game.away_team}</div>
+                            <img src="${escapeHtml(game.away_team_logo || '')}" alt="${escapeHtml(game.away_team_name)}" class="game-team-logo" onerror="this.style.display='none'">
+                            <div class="game-team-name">${escapeHtml(game.away_team_name || game.away_team)}</div>
                             <div class="game-team-score">${awayScore}</div>
                         </div>`;
                     
@@ -88,13 +88,13 @@ async function loadGamesList(date = null) {
                     const homeRow = homeIsWinner ?
                         `<div class="game-score-row winner">
                             <div class="game-winner-indicator">▶</div>
-                            <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-team-logo" onerror="this.style.display='none'">
-                            <div class="game-team-name">${game.home_team_name || game.home_team}</div>
+                            <img src="${escapeHtml(game.home_team_logo || '')}" alt="${escapeHtml(game.home_team_name)}" class="game-team-logo" onerror="this.style.display='none'">
+                            <div class="game-team-name">${escapeHtml(game.home_team_name || game.home_team)}</div>
                             <div class="game-team-score">${homeScore}</div>
                         </div>` :
                         `<div class="game-score-row loser">
-                            <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-team-logo" onerror="this.style.display='none'">
-                            <div class="game-team-name">${game.home_team_name || game.home_team}</div>
+                            <img src="${escapeHtml(game.home_team_logo || '')}" alt="${escapeHtml(game.home_team_name)}" class="game-team-logo" onerror="this.style.display='none'">
+                            <div class="game-team-name">${escapeHtml(game.home_team_name || game.home_team)}</div>
                             <div class="game-team-score">${homeScore}</div>
                         </div>`;
                     
@@ -192,27 +192,27 @@ async function loadGamesList(date = null) {
                     const homeRecord = showRecords && game.home_team_record ? `<div class="game-team-record">${game.home_team_record}</div>` : '';
                     
                     return `
-                        <div class="game-card ${isLive ? 'live' : ''}" onclick="selectGame('${game.game_id}')">
+                        <div class="game-card ${isLive ? 'live' : ''}" onclick="selectGame('${escapeHtml(game.game_id)}')">
                             <div class="game-live-score">
                                 <div class="game-live-team-left">
-                                    <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="game-live-logo" onerror="this.style.display='none'">
+                                    <img src="${escapeHtml(game.away_team_logo || '')}" alt="${escapeHtml(game.away_team_name)}" class="game-live-logo" onerror="this.style.display='none'">
                                     <div class="game-live-score-num">${awayScore}</div>
-                                    <div class="game-live-team-name">${game.away_team_name || game.away_team}</div>
+                                    <div class="game-live-team-name">${escapeHtml(game.away_team_name || game.away_team)}</div>
                                     ${awayRecord}
                                 </div>
                                 <div class="game-live-time-container">
                                     ${isLive ? '<div class="game-live-indicator"></div>' : ''}
-                                    <div class="game-live-time">${gameTimeDisplay}</div>
-                                    ${isLive ? 
-                                        `<div class="game-spread">${periodDisplay}</div>` :
-                                        (game.spread !== null && game.spread !== undefined ? 
-                                            `<div class="game-spread">${game.spread_favorite === 'home' ? game.home_team_name : game.away_team_name} ${game.spread > 0 ? '+' : ''}${game.spread}</div>` : 
+                                    <div class="game-live-time">${escapeHtml(gameTimeDisplay)}</div>
+                                    ${isLive ?
+                                        `<div class="game-spread">${escapeHtml(periodDisplay)}</div>` :
+                                        (game.spread !== null && game.spread !== undefined ?
+                                            `<div class="game-spread">${escapeHtml(game.spread_favorite === 'home' ? game.home_team_name : game.away_team_name)} ${game.spread > 0 ? '+' : ''}${game.spread}</div>` :
                                             '<div class="game-spread">N/A</div>')}
                                 </div>
                                 <div class="game-live-team-right">
-                                    <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-live-logo" onerror="this.style.display='none'">
+                                    <img src="${escapeHtml(game.home_team_logo || '')}" alt="${escapeHtml(game.home_team_name)}" class="game-live-logo" onerror="this.style.display='none'">
                                     <div class="game-live-score-num">${homeScore}</div>
-                                    <div class="game-live-team-name">${game.home_team_name || game.home_team}</div>
+                                    <div class="game-live-team-name">${escapeHtml(game.home_team_name || game.home_team)}</div>
                                     ${homeRecord}
                                 </div>
                             </div>
@@ -240,23 +240,43 @@ async function prefetchGameData(gameIds) {
             if (winprobResponse.ok) {
                 const data = await winprobResponse.json();
                 gameDataCache[gameId] = data;
+            } else {
+                console.debug(`[Prefetch] Failed to prefetch winprob for game ${gameId}: ${winprobResponse.status}`);
             }
             
             // Prefetch play-by-play data (this will populate Redis cache)
             // Don't await - just fire and forget to populate cache
-            fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=50`).catch(() => {});
+            fetch(`${API_BASE}/v1/games/${gameId}/playbyplay?limit=50`)
+                .catch((error) => {
+                    console.debug(`[Prefetch] Failed to prefetch playbyplay for game ${gameId}:`, error);
+                });
         } catch (error) {
-            // Silently fail - we'll fetch on demand if needed
+            // Add console.debug for prefetch failures
+            console.debug(`[Prefetch] Error prefetching game ${gameId}:`, error);
         }
     });
     // Don't await - let it run in background
-    Promise.all(prefetchPromises).catch(() => {});
+    Promise.all(prefetchPromises).catch((error) => {
+        console.debug('[Prefetch] Error in prefetch batch:', error);
+    });
 }
 
 
 async function selectGame(gameId) {
     // Hide games list immediately
-    showGameDetails();
+    // Inline showGameDetails logic here since ui.js loads after api.js
+    const mainContainer = document.querySelector('.main-container');
+    if (mainContainer) {
+        mainContainer.style.display = 'none';
+    }
+    
+    // Show game details
+    let gameDetails = document.getElementById('gameDetails');
+    if (gameDetails) {
+        gameDetails.style.display = 'block';
+        gameDetails.classList.add('show');
+        gameDetails.scrollIntoView({ behavior: 'smooth' });
+    }
     
     // Show cached data immediately for instant display
     if (gameDataCache[gameId]) {
@@ -324,7 +344,10 @@ async function selectGame(gameId) {
     }
     
     // No basic info either - show loading state and fetch
-    const gameDetails = document.getElementById('gameDetails');
+    // gameDetails already declared above, reuse it
+    if (!gameDetails) {
+        gameDetails = document.getElementById('gameDetails');
+    }
     const placeholder = document.getElementById('game-content-placeholder');
     if (placeholder) {
         placeholder.innerHTML = '<div class="spinner"></div><div style="text-align: center; color: #aaaaaa; margin-top: 20px;">Loading game...</div>';
@@ -346,6 +369,7 @@ async function selectGame(gameId) {
                 }
             } else {
                 // If fetch fails, start ingestion (only for non-completed games)
+                // Only retry once to prevent infinite recursion
                 if (currentGameId === gameId) {
                     // Check if game is completed before starting ingestion
                     fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`)
@@ -356,27 +380,21 @@ async function selectGame(gameId) {
                             return null;
                         })
                         .then(checkData => {
-                            if (checkData) {
-                                const isFinal = checkData.game && (checkData.game.game_state === 'OFF' || checkData.game.game_state === 'FINAL');
-                                if (!isFinal && currentGameId === gameId) {
-                                    startIngestionForGame(gameId).catch(err => {
-                                        console.error('Error starting ingestion:', err);
-                                    });
-                                }
+                            // Start ingestion for any game (live or final) to enable backfill
+                            if (checkData && currentGameId === gameId) {
+                                startIngestionForGame(gameId).catch(err => {
+                                    console.error('Error starting ingestion:', err);
+                                });
                             } else if (currentGameId === gameId) {
-                                // If we can't check, try starting ingestion anyway
+                                // If we can't check, try starting ingestion anyway (only once)
                                 startIngestionForGame(gameId).catch(err => {
                                     console.error('Error starting ingestion:', err);
                                 });
                             }
                         })
-                        .catch(() => {
-                            // If check fails, try starting ingestion anyway
-                            if (currentGameId === gameId) {
-                                startIngestionForGame(gameId).catch(err => {
-                                    console.error('Error starting ingestion:', err);
-                                });
-                            }
+                        .catch(err => {
+                            // On fetch error, log and stop (don't recurse)
+                            console.warn('Unable to verify game state for ingestion:', err.message);
                         });
                 }
             }
@@ -403,18 +421,33 @@ async function refreshGameData(gameId) {
         const response = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`);
         if (response.ok) {
             const data = await response.json();
+            
+            // Validate data structure before proceeding
+            if (!data || !data.game) {
+                console.warn('refreshGameData: invalid data structure', data);
+                return;
+            }
+            
             const isFinal = data.game && (data.game.game_state === 'OFF' || data.game.game_state === 'FINAL');
             
             // For completed games, only update if data has changed
+            // Guard against missing score data
             if (isFinal && gameDataCache[gameId] && currentGameId === gameId) {
                 const cachedData = gameDataCache[gameId];
-                const dataChanged = 
-                    cachedData.score.home.goals !== data.score.home.goals ||
-                    cachedData.score.away.goals !== data.score.away.goals ||
-                    Math.abs((cachedData.win_probability[data.score.home.team] || 0) - (data.win_probability[data.score.home.team] || 0)) > 0.001;
                 
-                if (!dataChanged) {
-                    return; // Data hasn't changed, don't re-render
+                // Validate that both cached and new data have score information
+                if (cachedData.score && cachedData.score.home && cachedData.score.away &&
+                    data.score && data.score.home && data.score.away &&
+                    data.win_probability && cachedData.win_probability) {
+                    
+                    const dataChanged = 
+                        cachedData.score.home.goals !== data.score.home.goals ||
+                        cachedData.score.away.goals !== data.score.away.goals ||
+                        Math.abs((cachedData.win_probability[data.score.home.team] || 0) - (data.win_probability[data.score.home.team] || 0)) > 0.001;
+                    
+                    if (!dataChanged) {
+                        return; // Data hasn't changed, don't re-render
+                    }
                 }
             }
             
@@ -426,35 +459,81 @@ async function refreshGameData(gameId) {
         }
     } catch (error) {
         // Silently fail - cached data is still valid
+        console.warn('refreshGameData error:', error);
     }
 }
 
 
-async function fetchResults(gameId) {
+async function fetchResults(gameId, retryCount = 0) {
+    const MAX_RETRIES = 60; // Maximum 5 minutes of polling (60 * 5 seconds)
+
     try {
         const response = await fetch(`${API_BASE}/v1/games/${gameId}/winprob/friendly`);
         const data = await response.json();
 
         if (response.ok) {
+            // Validate data structure before proceeding
+            if (!data || !data.game) {
+                console.error('fetchResults: invalid data structure', data);
+                const gameDetails = document.getElementById('gameDetails');
+                if (gameDetails) {
+                    gameDetails.innerHTML = `
+                        <div class="back-button-container">
+                            <button class="back-button" onclick="showGamesList()">← Back to Games</button>
+                        </div>
+                        <div style="text-align: center; padding: 40px; color: #ee8888;">
+                            <div style="font-size: 1.2em; margin-bottom: 10px;">Error Loading Game</div>
+                            <div>Invalid game data received</div>
+                        </div>
+                    `;
+                    gameDetails.style.display = 'block';
+                    gameDetails.classList.add('show');
+                }
+                return;
+            }
+
             // For completed games, only re-display if data has actually changed
+            // Guard against missing score data
             const isFinal = data.game && (data.game.game_state === 'OFF' || data.game.game_state === 'FINAL');
             if (isFinal && gameDataCache[gameId] && currentGameId === gameId) {
                 // Check if data has actually changed
                 const cachedData = gameDataCache[gameId];
-                const dataChanged = 
-                    cachedData.score.home.goals !== data.score.home.goals ||
-                    cachedData.score.away.goals !== data.score.away.goals ||
-                    Math.abs((cachedData.win_probability[data.score.home.team] || 0) - (data.win_probability[data.score.home.team] || 0)) > 0.001;
-                
-                // Only re-display if data actually changed
-                if (!dataChanged) {
-                    return; // Data hasn't changed, don't re-render
+
+                // Validate that both cached and new data have score information
+                if (cachedData.score && cachedData.score.home && cachedData.score.away &&
+                    data.score && data.score.home && data.score.away &&
+                    data.win_probability && cachedData.win_probability &&
+                    data.score.home.team) {
+
+                    const dataChanged =
+                        cachedData.score.home.goals !== data.score.home.goals ||
+                        cachedData.score.away.goals !== data.score.away.goals ||
+                        Math.abs((cachedData.win_probability[data.score.home.team] || 0) - (data.win_probability[data.score.home.team] || 0)) > 0.001;
+
+                    // Only re-display if data actually changed
+                    if (!dataChanged) {
+                        return; // Data hasn't changed, don't re-render
+                    }
                 }
             }
-            
+
             displayResults(data);
         } else if (response.status === 202) {
-            setTimeout(() => pollForResults(gameId), 5000);
+            // Check if we've exceeded max retries
+            if (retryCount >= MAX_RETRIES) {
+                console.error(`Max retries exceeded for game ${gameId}`);
+                const placeholder = document.getElementById('game-content-placeholder');
+                if (placeholder) {
+                    placeholder.innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #ee8888;">
+                            <div style="font-size: 1.2em; margin-bottom: 10px;">Timeout</div>
+                            <div>Game data took too long to load. Please try again.</div>
+                        </div>
+                    `;
+                }
+                return;
+            }
+            setTimeout(() => pollForResults(gameId, retryCount + 1), 5000);
         } else {
             // Show error message in game details with back button already visible
             const gameDetails = document.getElementById('gameDetails');
@@ -466,6 +545,18 @@ async function fetchResults(gameId) {
                         <div>${data.detail || 'Unknown error'}</div>
                     </div>
                 `;
+            } else if (gameDetails) {
+                gameDetails.innerHTML = `
+                    <div class="back-button-container">
+                        <button class="back-button" onclick="showGamesList()">← Back to Games</button>
+                    </div>
+                    <div style="text-align: center; padding: 40px; color: #ee8888;">
+                        <div style="font-size: 1.2em; margin-bottom: 10px;">Error Loading Game</div>
+                        <div>${data.detail || 'Unknown error'}</div>
+                    </div>
+                `;
+                gameDetails.style.display = 'block';
+                gameDetails.classList.add('show');
             }
         }
     } catch (error) {
@@ -476,9 +567,21 @@ async function fetchResults(gameId) {
             placeholder.innerHTML = `
                 <div style="text-align: center; padding: 40px; color: #ee8888;">
                     <div style="font-size: 1.2em; margin-bottom: 10px;">Error Loading Game</div>
-                    <div>${error.message}</div>
+                    <div>${error.message || 'Network error'}</div>
                 </div>
             `;
+        } else if (gameDetails) {
+            gameDetails.innerHTML = `
+                <div class="back-button-container">
+                    <button class="back-button" onclick="showGamesList()">← Back to Games</button>
+                </div>
+                <div style="text-align: center; padding: 40px; color: #ee8888;">
+                    <div style="font-size: 1.2em; margin-bottom: 10px;">Error Loading Game</div>
+                    <div>${error.message || 'Network error'}</div>
+                </div>
+            `;
+            gameDetails.style.display = 'block';
+            gameDetails.classList.add('show');
         }
     }
 }

@@ -1,7 +1,7 @@
 """Rate limiting middleware for FastAPI applications."""
 
 import time
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple
 from fastapi import Request, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -34,7 +34,7 @@ class RateLimiter:
         self.window_seconds = window_seconds
         self.requests: Dict[str, list[float]] = {}
 
-    def is_allowed(self, client_id: str) -> Tuple[bool, Dict[str, any]]:
+    def is_allowed(self, client_id: str) -> Tuple[bool, Dict[str, Any]]:
         """
         Check if request from client is allowed.
 
@@ -73,6 +73,16 @@ class RateLimiter:
         # Add current request
         self.requests[client_id].append(now)
 
+        # Cleanup: Remove stale client entries (no requests in last 2 windows)
+        # This prevents memory leak from inactive clients
+        if len(self.requests) > 1000:  # Only cleanup if we have many entries
+            stale_clients = [
+                cid for cid, reqs in self.requests.items()
+                if not reqs or (reqs and max(reqs) < now - (2 * self.window_seconds))
+            ]
+            for stale_client in stale_clients:
+                del self.requests[stale_client]
+
         return True, {
             "limit": self.max_requests,
             "remaining": self.max_requests - current_count - 1,
@@ -97,10 +107,25 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         """Process request with rate limiting."""
+        # Skip rate limiting for polling endpoints that need frequent updates
+        # These endpoints are polled every 500ms-1s by the frontend for live games
+        path = request.url.path
+        if path.startswith("/v1/games/") and (
+            "/playbyplay" in path or 
+            "/winprob" in path or
+            path.endswith("/status")
+        ):
+            # Allow polling endpoints without rate limiting
+            response = await call_next(request)
+            # Optionally add headers indicating no rate limit
+            response.headers["X-RateLimit-Limit"] = "unlimited"
+            response.headers["X-RateLimit-Remaining"] = "unlimited"
+            return response
+
         # Get client identifier (IP address)
         client_id = request.client.host if request.client else "unknown"
 
-        # Check rate limit
+        # Check rate limit for other endpoints
         allowed, rate_info = self.limiter.is_allowed(client_id)
 
         if not allowed:

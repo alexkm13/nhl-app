@@ -14,5 +14,5 @@ const TEAM_COLORS = {
 };
 
 // Application version for cache invalidation
-const APP_VERSION = 'v8';
+const APP_VERSION = 'v19';
 

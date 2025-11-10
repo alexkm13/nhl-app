@@ -101,9 +101,20 @@ async def stream_nhl_game_events(r: Redis, game_id: str):
                 situation_code = play.get("situationCode", "1551")
                 strength = STRENGTH_MAP.get(situation_code, "EV")
 
-                # Get coordinates
+                # Get coordinates with validation
                 x = details.get("xCoord")
                 y = details.get("yCoord")
+
+                # Validate coordinates are numeric
+                try:
+                    if x is not None:
+                        x = float(x)
+                    if y is not None:
+                        y = float(y)
+                except (ValueError, TypeError):
+                    logger = logging.getLogger("nhl-ingestor")
+                    logger.warning(f"Invalid coordinates x={x}, y={y}, setting to None")
+                    x, y = None, None
 
                 # Create timestamp
                 now = time.time()
@@ -130,16 +141,17 @@ async def stream_nhl_game_events(r: Redis, game_id: str):
                 try:
                     if DATABASE_URL:
                         async with await psycopg.AsyncConnection.connect(
-                            DATABASE_URL
+                            DATABASE_URL, autocommit=True
                         ) as conn:
                             async with conn.cursor() as cur:
                                 await cur.execute(
                                     "INSERT INTO events(ts, game_id, team, event_type, strength, x, y) VALUES (to_timestamp(%s), %s, %s, %s, %s, %s, %s)",
                                     (now, game_id, team, event_type, strength, x, y),
                                 )
-                                await conn.commit()
+                                # No commit needed with autocommit=True
                 except Exception as e:
-                    print(f"[nhl-ingestor][db] insert error: {e}")
+                    logger = logging.getLogger("nhl-ingestor")
+                    logger.error(f"Database insert error: {e}", exc_info=True)
 
             # Poll every 5 seconds for updates (slower to avoid rate limiting)
             await asyncio.sleep(5)

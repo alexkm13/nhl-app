@@ -6,9 +6,10 @@ services:
     command: ["redis-server", "--appendonly", "yes"]
     healthcheck:
       test: ["CMD", "redis-cli", "PING"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   ingestor:
     build: ./services/ingestor
@@ -94,9 +95,10 @@ services:
       - ./infra/timescaledb/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d gamecast"]
-      interval: 5s
+      interval: 10s
       timeout: 5s
-      retries: 20
+      retries: 10
+      start_period: 30s
 
   prometheus:
     image: prom/prometheus:v2.53.0

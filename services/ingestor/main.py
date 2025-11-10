@@ -139,7 +139,7 @@ async def produce_synthetic_game(r: Redis, game_id: str) -> None:
         # Insert into TimescaleDB (optional)
         try:
             if DATABASE_URL:
-                async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
+                async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
                     async with conn.cursor() as cur:
                         await cur.execute(
                             "INSERT INTO events(ts, game_id, team, event_type, strength, x, y, shot_quality) VALUES (to_timestamp(%s), %s, %s, %s, %s, %s, %s, %s)",
@@ -154,7 +154,7 @@ async def produce_synthetic_game(r: Redis, game_id: str) -> None:
                                 payload["shot_quality"],
                             ),
                         )
-                        await conn.commit()
+                        # No commit needed with autocommit=True
         except Exception as e:
             logger.error(f"Database insert error: {e}", exc_info=True)
 
@@ -268,31 +268,51 @@ async def produce_nhl_game(r: Redis, game_id: str) -> None:
         elif event_owner_id == away_team_id:
             team = "AWAY"
         else:
-            # For goals, never use defending side fallback (defending team is the one that got scored on)
-            # Goals are crucial events and should always have eventOwnerTeamId
+            # Missing eventOwnerTeamId - need fallback logic
+            # For goals, use consistent scoring team logic
             if mapped_type == "GOAL":
-                # For goals, try to use scoringPlayerId to determine team if available
-                # But for now, log an error and use a safer fallback
-                print(
-                    f"[ingestor] WARNING: Goal missing eventOwnerTeamId for game {game_id}, using scoring team logic"
+                # For goals, use scoringPlayerId to determine team if available
+                logger.warning(
+                    f"Goal missing eventOwnerTeamId for game {game_id}, using defending side logic"
                 )
                 # Use the scoring team - if homeTeamDefendingSide is "right",
                 # home is defending, so away scored (opposite of defending)
-                team = (
-                    "AWAY" if play.get("homeTeamDefendingSide") == "right" else "HOME"
-                )
+                defending_side = play.get("homeTeamDefendingSide")
+                if defending_side:
+                    team = "AWAY" if defending_side == "right" else "HOME"
+                else:
+                    # Last resort: assume home team
+                    logger.error(f"Goal missing both eventOwnerTeamId and homeTeamDefendingSide for game {game_id}")
+                    team = "HOME"
             else:
-                # For non-crucial events, fallback to defending side if eventOwnerTeamId not available
-                team = (
-                    "HOME" if play.get("homeTeamDefendingSide") == "right" else "AWAY"
-                )
+                # For non-crucial events, fallback to defending side if available
+                defending_side = play.get("homeTeamDefendingSide")
+                if defending_side:
+                    team = "HOME" if defending_side == "right" else "AWAY"
+                else:
+                    # Default to home team if no defending side info
+                    team = "HOME"
 
         # Get situation/strength from NHL API situationCode
         # Format: ABCD where B=away_skaters, D=home_skaters
         # E.g., "1551" = 5v5 even strength, "1451" = 4v5, "0651" = 6v1 (empty net)
         situation = play.get("situationCode", "1551")
-        away_skaters = int(situation[1]) if len(situation) >= 2 else 5
-        home_skaters = int(situation[3]) if len(situation) >= 4 else 5
+
+        # Validate and parse situationCode with bounds checking
+        try:
+            if len(situation) >= 4 and situation.isdigit():
+                away_skaters = int(situation[1])
+                home_skaters = int(situation[3])
+                # Sanity check: skaters should be 0-6
+                if not (0 <= away_skaters <= 6 and 0 <= home_skaters <= 6):
+                    logger.warning(f"Invalid situationCode {situation}, using defaults")
+                    away_skaters, home_skaters = 5, 5
+            else:
+                logger.warning(f"Malformed situationCode {situation}, using defaults")
+                away_skaters, home_skaters = 5, 5
+        except (ValueError, IndexError):
+            logger.warning(f"Failed to parse situationCode {situation}, using defaults")
+            away_skaters, home_skaters = 5, 5
 
         # Detect empty net situations (6 skaters or 0 skaters = goalie pulled)
         empty_net = False
@@ -446,7 +466,7 @@ async def produce_nhl_game(r: Redis, game_id: str) -> None:
         # Insert into TimescaleDB
         try:
             if DATABASE_URL:
-                async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
+                async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
                     async with conn.cursor() as cur:
                         await cur.execute(
                             "INSERT INTO events(ts, game_id, team, event_type, strength, x, y, shot_quality) VALUES (to_timestamp(%s), %s, %s, %s, %s, %s, %s, %s)",
@@ -461,17 +481,17 @@ async def produce_nhl_game(r: Redis, game_id: str) -> None:
                                 payload["shot_quality"],
                             ),
                         )
-                        await conn.commit()
+                        # No commit needed with autocommit=True
         except Exception as e:
-            print(f"[ingestor][db] insert error: {e}")
+            logger.error(f"Database insert error: {e}", exc_info=True)
 
         sid = await r.xadd(STREAM_EVENTS, {"json": json.dumps(payload)})
-        print(f"[ingestor] XADD events id={sid} {mapped_type} team={team}")
+        logger.debug(f"XADD events id={sid} {mapped_type} team={team}")
 
         # Minimal delay for fast ingestion (0.01s = ~100 events/sec)
         await asyncio.sleep(0.01)
 
-    print("[ingestor] NHL game events processed")
+    logger.info("NHL game events processed")
 
 
 async def main():
