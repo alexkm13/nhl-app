@@ -348,13 +348,25 @@ async def get_winprob(game_id: str):
         model_id_val = data.get("model_id")
         ts_val = data.get("ts")
         
-        # Check if required fields are missing or empty
-        if not game_id_val or not p_home_win_val or not model_id_val or ts_val is None:
+        # Check if required fields are missing, empty, or invalid strings
+        # Handle cases where Redis returns "None" as a string or empty strings
+        if (not game_id_val or 
+            not p_home_win_val or 
+            not model_id_val or 
+            ts_val is None or 
+            ts_val == "" or 
+            ts_val.lower() == "none"):
             raise HTTPException(status_code=404, detail="No prediction yet for this game")
         
         # Convert to appropriate types with error handling
         try:
             p_home_win_float = float(p_home_win_val)
+            # Validate probability is in valid range
+            if not (0.0 <= p_home_win_float <= 1.0):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Invalid probability value: {p_home_win_float}. Must be between 0.0 and 1.0."
+                )
             ts_float = float(ts_val)
         except (ValueError, TypeError) as e:
             # Handle cases where ts might be "None", empty string, or invalid
@@ -1518,6 +1530,36 @@ async def get_player_stats(game_id: str):
         )
 
 
+def _get_valid_timestamp(data: dict) -> float:
+    """Extract valid timestamp from prediction data, with fallback to current time."""
+    timestamp_val = data.get("timestamp")
+    ts_val = data.get("ts")
+    
+    # Try timestamp first (wall-clock time)
+    if timestamp_val:
+        try:
+            return float(timestamp_val)
+        except (ValueError, TypeError):
+            pass
+    
+    # Fallback to ts (relative time) - but this is relative, not wall-clock
+    # For updated_at, we want wall-clock time, so use current time if ts is relative
+    if ts_val:
+        try:
+            ts_float = float(ts_val)
+            # If ts is a small number (< 10000), it's likely relative time (0-3600s)
+            # Use current time instead
+            if ts_float < 10000:
+                return time.time()
+            # Otherwise assume it's a valid timestamp
+            return ts_float
+        except (ValueError, TypeError):
+            pass
+    
+    # Final fallback: current time
+    return time.time()
+
+
 @router.get("/{game_id}/winprob/friendly")
 async def get_winprob_friendly(game_id: str):
     """Human-readable win probability with percentages and game score"""
@@ -1725,16 +1767,36 @@ async def get_winprob_friendly(game_id: str):
                         period = play.get("periodDescriptor", {}).get("number", period)
                         break
 
-        # Calculate win probability based on current game state
-        p_home = calculate_win_probability(
-            home_score=home_score,
-            away_score=away_score,
-            game_state=game_state,
-            period=period,
-            time_in_period=time_in_period,
-            plays=plays,
-        )
-        p_away = 1.0 - p_home
+        # Validate prediction data before using it
+        p_home = None
+        p_away = None
+        
+        # Try to get prediction from Redis data
+        p_home_win_val = data.get("p_home_win")
+        if p_home_win_val:
+            try:
+                p_home = float(p_home_win_val)
+                # Validate probability is in valid range
+                if 0.0 <= p_home <= 1.0:
+                    p_away = 1.0 - p_home
+                else:
+                    # Invalid range, will calculate below
+                    p_home = None
+            except (ValueError, TypeError):
+                # Invalid prediction data, will calculate below
+                pass
+        
+        # If prediction data is invalid or missing, calculate from game state
+        if p_home is None:
+            p_home = calculate_win_probability(
+                home_score=home_score,
+                away_score=away_score,
+                game_state=game_state,
+                period=period,
+                time_in_period=time_in_period,
+                plays=plays,
+            )
+            p_away = 1.0 - p_home
         strength = state.get("strength", "EV")
         empty_net_str = state.get("empty_net", "False")
         empty_net = (
@@ -1912,7 +1974,15 @@ async def get_winprob_friendly(game_id: str):
             else "Low",
             # Use timestamp (wall-clock time) if available, otherwise fall back to ts (relative time)
             # model_svc now stores both ts (relative) and timestamp (wall-clock)
-            "updated_at": float(data.get("timestamp", data.get("ts", time.time()))),
+            "updated_at": _get_valid_timestamp(data),
         }
-    except Exception:
-        raise HTTPException(status_code=404, detail="No prediction yet for this game")
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Log the actual error for debugging
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error retrieving win probability: {str(e)}"
+        )
