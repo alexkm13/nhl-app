@@ -102,20 +102,60 @@ async function displayResults(data) {
     const isLive = data.game.is_live || data.game.game_state === 'LIVE' || data.game.game_state === 'CRIT';
     const isFinal = data.game.game_state === 'OFF' || data.game.game_state === 'FINAL';
     
-    // Start ingestion for all games (live or final) to ensure backfill for offline games
-    // This ensures that even games not watched live will have model predictions and play-by-play data
-        if (!ingestionStartedForGames.has(gameId)) {
-            ingestionStartedForGames.add(gameId);
-            startIngestionForGame(gameId).catch(() => {
-                // Silently fail - ingestion may already be in progress or game may not exist
-                // Remove from set if it fails so we can retry later if needed
+    // Check game status before starting ingestion
+    // Only start ingestion if data doesn't exist yet or if game is LIVE/CRIT
+    if (!ingestionStartedForGames.has(gameId)) {
+        ingestionStartedForGames.add(gameId);
+        
+        // First check if data already exists
+        try {
+            const statusResponse = await fetch(`${API_BASE}/v1/games/${gameId}/status`);
+            if (statusResponse.ok) {
+                const statusData = await statusResponse.json();
+                
+                // If we already have prediction or state data, skip starting ingestion
+                // Just render with cached data (which will be loaded by displayResults)
+                if (statusData.has_prediction === true || statusData.has_state === true) {
+                    console.log(`[Ingestion] Game ${gameId} already has data (has_prediction: ${statusData.has_prediction}, has_state: ${statusData.has_state}), skipping ingestion`);
+                    // Data exists, so we can render immediately - displayResults will handle fetching
+                } else if (isLive || isFinal) {
+                    // No data exists yet, start ingestion for live or final games
+                    startIngestionForGame(gameId).catch(() => {
+                        // Silently fail - ingestion may already be in progress or game may not exist
+                        // Remove from set if it fails so we can retry later if needed
+                        ingestionStartedForGames.delete(gameId);
+                    });
+                } else {
+                    // Game is not live and not final, and no data exists
+                    // This is a pre-game scenario, no need to start ingestion yet
+                    ingestionStartedForGames.delete(gameId);
+                }
+            } else {
+                // Status check failed, fall back to starting ingestion for live/final games
+                if (isLive || isFinal) {
+                    startIngestionForGame(gameId).catch(() => {
+                        ingestionStartedForGames.delete(gameId);
+                    });
+                } else {
+                    ingestionStartedForGames.delete(gameId);
+                }
+            }
+        } catch (error) {
+            // Status check error, fall back to starting ingestion for live/final games
+            console.warn(`[Ingestion] Status check failed for game ${gameId}:`, error);
+            if (isLive || isFinal) {
+                startIngestionForGame(gameId).catch(() => {
+                    ingestionStartedForGames.delete(gameId);
+                });
+            } else {
                 ingestionStartedForGames.delete(gameId);
-            });
-        } else if (isLive) {
-            // For live games we've already started, trigger a refresh to get latest state
-            triggerModelRefresh(gameId).catch(() => {
-                // Silently fail
-            });
+            }
+        }
+    } else if (isLive) {
+        // For live games we've already started, trigger a refresh to get latest state
+        triggerModelRefresh(gameId).catch(() => {
+            // Silently fail
+        });
     }
     
     // Hide games list and show game details
@@ -1003,8 +1043,8 @@ function renderFeedEvents(events, homeTeam, awayTeam, homeLogo, awayLogo, isLive
     const gameState = gameStateFromAPI || (isLive ? 'LIVE' : 'OFF');
     const isFinal = gameState === 'OFF' || gameState === 'FINAL';
     
-    // Filter events: keep crucial events (GOAL, PENALTY, PERIOD_END) ALWAYS
-    const crucialEventTypes = ['GOAL', 'PENALTY', 'PERIOD_END'];
+    // Filter events: keep crucial events (GOAL, PENALTY, PERIOD_END, PERIOD_START) ALWAYS
+    const crucialEventTypes = ['GOAL', 'PENALTY', 'PERIOD_END', 'PERIOD_START'];
     
     // Deduplicate events by ID (backend should already deduplicate, but do it here too for safety)
     const seenIds = new Set();
@@ -1176,9 +1216,9 @@ function renderFeedEvents(events, homeTeam, awayTeam, homeLogo, awayLogo, isLive
         const scoreDisplay = `
             <span class="event-score-container">
                 ${homeLogoHtml}
-                <span style="${homeScoreBold}">${event.home_score}</span>
+                <span style="${homeScoreBold}">${event.home_score ?? 0}</span>
                 <span class="event-score-dash">-</span>
-                <span style="${awayScoreBold}">${event.away_score}</span>
+                <span style="${awayScoreBold}">${event.away_score ?? 0}</span>
                 ${awayLogoHtml}
             </span>
         `;
@@ -1531,7 +1571,8 @@ async function loadPlayByPlay(gameId, homeTeam, awayTeam, homeLogo = '', awayLog
             away_team_name: awayTeam,
             home_team_logo: homeLogo,
             away_team_logo: awayLogo,
-            game_state: 'LIVE'
+            is_live: true,
+            game_state: 'LIVE' // Will be verified in startGameFeedPolling
         };
         startGameFeedPolling(gameId, gameData);
     }

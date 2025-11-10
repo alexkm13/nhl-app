@@ -24,6 +24,24 @@ async function startIngestionForGame(gameId) {
             }
         }
         
+        // Check ingestion status before starting
+        // If ingestion is already in progress, don't fire /start again, just poll for results
+        try {
+            const statusResponse = await fetch(`${API_BASE}/v1/games/${gameId}/status`);
+            if (statusResponse.ok) {
+                const statusData = await statusResponse.json();
+                
+                if (statusData.ingestion_status === 'in_progress') {
+                    console.log(`[Ingestion] Game ${gameId} ingestion already in progress, skipping /start and polling for results`);
+                    pollForResults(gameId);
+                    return;
+                }
+            }
+        } catch (statusError) {
+            // If status check fails, continue with starting ingestion
+            console.warn(`[Ingestion] Status check failed for game ${gameId}, proceeding with /start:`, statusError);
+        }
+        
         const response = await fetch(`${API_BASE}/v1/games/${gameId}/start`, {
             method: 'POST'
         });
@@ -66,16 +84,16 @@ async function triggerModelRefresh(gameId) {
     if (!currentGameIsLive || currentGameId !== gameId) {
         return;
     }
-    
+
     try {
-        // Re-run ingestion to process new events and trigger new predictions
-        // The backend will skip if already in progress, so this is safe
-        const response = await fetch(`${API_BASE}/v1/games/${gameId}/start`, {
+        // Use incremental refresh to process only new events without clearing state
+        // This prevents breaking the play-by-play feed during updates
+        const response = await fetch(`${API_BASE}/v1/games/${gameId}/refresh`, {
             method: 'POST'
         });
         // Don't wait for response - fire and forget
     } catch (error) {
-        // Silently fail
+        // Silently fail - if refresh fails, fall back to polling
     }
 }
 
