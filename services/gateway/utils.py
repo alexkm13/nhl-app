@@ -384,6 +384,9 @@ async def run_ingestion(game_id: str, redis: Redis):
             str(datetime.now().isoformat()),
         )
 
+        # Track event count for incremental updates
+        await redis.set(f"last_event_count:{game_id}", str(len(plays)))
+
         print(
             f"[gateway] Ingestion complete for game {game_id}, published {len(plays)} events to 'events' stream"
         )

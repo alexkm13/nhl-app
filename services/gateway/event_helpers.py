@@ -187,6 +187,7 @@ def format_goal_description(
     game_situation: str,
     strength: str,
     assists: list = None,
+    empty_net: bool = False,
 ) -> str:
     """Format goal description with all details.
 
@@ -215,10 +216,12 @@ def format_goal_description(
 
     shot_desc_lower = shot_desc.lower()
 
+    empty_net_label = "empty net " if empty_net else ""
+
     if distance is not None:
-        desc = f"{distance}' {game_situation}{strength_label}{shot_desc_lower} goal"
+        desc = f"{distance}' {empty_net_label}{game_situation}{strength_label}{shot_desc_lower} goal"
     else:
-        desc = f"{game_situation}{strength_label}{shot_desc_lower} goal"
+        desc = f"{empty_net_label}{game_situation}{strength_label}{shot_desc_lower} goal"
 
     if assists:
         assist_text = ", ".join(assists)

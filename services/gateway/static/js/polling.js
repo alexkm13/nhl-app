@@ -67,170 +67,7 @@ function startGamesListPolling(date) {
                         const gamesList = document.getElementById('gamesList');
                         if (gamesList) {
                             // Use the same rendering logic as loadGamesList
-                            gamesList.innerHTML = data.games.map(game => {
-                                const isFinal = game.game_state === 'OFF' || game.game_state === 'FINAL';
-                                const homeScore = game.home_score || 0;
-                                const awayScore = game.away_score || 0;
-                                const homeIsWinner = homeScore > awayScore;
-                                const awayIsWinner = awayScore > homeScore;
-                                const isTie = homeScore === awayScore;
-                                
-                                // Format final status text
-                                let finalStatusText = "▼ Final";
-                                if (isFinal && game.overtime_type === "OT") {
-                                    finalStatusText = "▼ Final/OT";
-                                } else if (isFinal && game.overtime_type === "SO") {
-                                    finalStatusText = "▼ Final/SO";
-                                }
-                                
-                                if (isFinal && !isTie) {
-                                    // Final game display (same as before)
-                                    const awayRow = awayIsWinner ?
-                                        `<div class="game-score-row winner">
-                                            <div class="game-winner-indicator">▶</div>
-                                            <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="game-team-logo" onerror="this.style.display='none'">
-                                            <div class="game-team-name">${game.away_team_name || game.away_team}</div>
-                                            <div class="game-team-score">${awayScore}</div>
-                                        </div>` :
-                                        `<div class="game-score-row loser">
-                                            <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="game-team-logo" onerror="this.style.display='none'">
-                                            <div class="game-team-name">${game.away_team_name || game.away_team}</div>
-                                            <div class="game-team-score">${awayScore}</div>
-                                        </div>`;
-                                    
-                                    const homeRow = homeIsWinner ?
-                                        `<div class="game-score-row winner">
-                                            <div class="game-winner-indicator">▶</div>
-                                            <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-team-logo" onerror="this.style.display='none'">
-                                            <div class="game-team-name">${game.home_team_name || game.home_team}</div>
-                                            <div class="game-team-score">${homeScore}</div>
-                                        </div>` :
-                                        `<div class="game-score-row loser">
-                                            <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-team-logo" onerror="this.style.display='none'">
-                                            <div class="game-team-name">${game.home_team_name || game.home_team}</div>
-                                            <div class="game-team-score">${homeScore}</div>
-                                        </div>`;
-                                    
-                                    return `
-                                        <div class="game-card" onclick="selectGame('${game.game_id}')">
-                                            <div class="game-card-header">
-                                                <span class="game-status-text">${finalStatusText}</span>
-                                            </div>
-                                            <div class="game-score-teams">
-                                                ${awayRow}
-                                                ${homeRow}
-                                            </div>
-                                        </div>
-                                    `;
-                                } else {
-                                    // Live or future game display (same as before)
-                                    const isLive = game.game_state === 'LIVE' || game.game_state === 'CRIT';
-                                    
-                                    let gameTimeDisplay = 'TBD';
-                                    let periodDisplay = '';
-                                    if (isLive) {
-                                        // For live games, always try to show period and time remaining
-                                        const period = game.period || game.periodDescriptor?.number || null;
-                                        const timeInPeriod = game.time_in_period || game.timeInPeriod || null;
-                                        
-                                        if (period && timeInPeriod) {
-                                            // Format period: "1st", "2nd", "3rd", "OT", etc.
-                                            let periodLabel;
-                                            if (period === 1) {
-                                                periodLabel = '1st';
-                                            } else if (period === 2) {
-                                                periodLabel = '2nd';
-                                            } else if (period === 3) {
-                                                periodLabel = '3rd';
-                                            } else if (period === 4) {
-                                                periodLabel = 'OT';
-                                            } else {
-                                                periodLabel = `${period}th`;
-                                            }
-                                            
-                                            // Convert time based on source
-                                            // If is_time_remaining is true, timeInPeriod is already time remaining
-                                            // If false or undefined, timeInPeriod is elapsed time and needs conversion
-                                            const isTimeRemaining = game.is_time_remaining === true;
-                                            let formattedTime;
-                                            if (timeInPeriod && timeInPeriod !== '00:00') {
-                                                if (isTimeRemaining) {
-                                                    // Already time remaining, use directly
-                                                    const [minutes, seconds] = timeInPeriod.split(':').map(Number);
-                                                    formattedTime = `${minutes}:${seconds.toString().padStart(2, '0')}`;
-                                                } else {
-                                                    // Convert elapsed time to remaining
-                                                    const [elapsedMinutes, elapsedSeconds] = timeInPeriod.split(':').map(Number);
-                                                    const elapsedTotalSeconds = elapsedMinutes * 60 + elapsedSeconds;
-                                                    
-                                                    // Determine period length: 20 minutes (1200 seconds) for regulation, 5 minutes (300 seconds) for OT
-                                                    const periodLengthSeconds = (period <= 3) ? 1200 : 300;
-                                                    const remainingTotalSeconds = Math.max(0, periodLengthSeconds - elapsedTotalSeconds);
-                                                    
-                                                    const remainingMinutes = Math.floor(remainingTotalSeconds / 60);
-                                                    const remainingSecs = remainingTotalSeconds % 60;
-                                                    formattedTime = `${remainingMinutes}:${remainingSecs.toString().padStart(2, '0')}`;
-                                                }
-                                            } else {
-                                                // If time is 00:00, show full period time remaining
-                                                formattedTime = (period <= 3) ? '20:00' : '5:00';
-                                            }
-                                            
-                                            // Separate time and period for display
-                                            gameTimeDisplay = formattedTime;
-                                            periodDisplay = periodLabel;
-                                        } else {
-                                            // If period/time data is missing, show default time remaining
-                                            gameTimeDisplay = '20:00';
-                                            periodDisplay = '1st';
-                                        }
-                                    } else if (game.start_time_utc) {
-                                        try {
-                                            const utcDate = new Date(game.start_time_utc);
-                                            const localTime = utcDate.toLocaleTimeString('en-US', {
-                                                hour: 'numeric',
-                                                minute: '2-digit',
-                                                hour12: true
-                                            });
-                                            gameTimeDisplay = localTime;
-                                        } catch (e) {
-                                            gameTimeDisplay = 'TBD';
-                                        }
-                                    }
-                                    
-                                    const showRecords = !isLive;
-                                    const awayRecord = showRecords && game.away_team_record ? `<div class="game-team-record">${game.away_team_record}</div>` : '';
-                                    const homeRecord = showRecords && game.home_team_record ? `<div class="game-team-record">${game.home_team_record}</div>` : '';
-                                    
-                                    return `
-                                        <div class="game-card ${isLive ? 'live' : ''}" onclick="selectGame('${game.game_id}')">
-                                            <div class="game-live-score">
-                                                <div class="game-live-team-left">
-                                                    <img src="${game.away_team_logo || ''}" alt="${game.away_team_name}" class="game-live-logo" onerror="this.style.display='none'">
-                                                    <div class="game-live-score-num">${awayScore}</div>
-                                                    <div class="game-live-team-name">${game.away_team_name || game.away_team}</div>
-                                                    ${awayRecord}
-                                                </div>
-                                                <div class="game-live-time-container">
-                                                    ${isLive ? '<div class="game-live-indicator"></div>' : ''}
-                                                    <div class="game-live-time">${gameTimeDisplay}</div>
-                                                    ${isLive ? 
-                                                        `<div class="game-spread">${periodDisplay}</div>` :
-                                                        (game.spread !== null && game.spread !== undefined ? 
-                                                            `<div class="game-spread">${game.spread_favorite === 'home' ? game.home_team_name : game.away_team_name} ${game.spread > 0 ? '+' : ''}${game.spread}</div>` : 
-                                                            '<div class="game-spread">N/A</div>')}
-                                                </div>
-                                                <div class="game-live-team-right">
-                                                    <img src="${game.home_team_logo || ''}" alt="${game.home_team_name}" class="game-live-logo" onerror="this.style.display='none'">
-                                                    <div class="game-live-score-num">${homeScore}</div>
-                                                    <div class="game-live-team-name">${game.home_team_name || game.home_team}</div>
-                                                    ${homeRecord}
-                                                </div>
-                                            </div>
-                                        </div>
-                                    `;
-                                }
-                            }).join('');
+                            gamesList.innerHTML = renderAllGameCards(data.games);
                         }
                     }
                 }
@@ -282,6 +119,18 @@ function startGameFeedPolling(gameId, gameData) {
     // Only poll if this is the currently viewed game
     if (currentGameId !== gameId) {
         return; // Don't poll games we're not viewing
+    }
+
+    // Check if game is actually live before starting polling
+    // Don't poll for completed games (OFF/FINAL state)
+    const gameState = gameData?.game_state || '';
+    const isLive = gameData?.is_live !== undefined ? gameData.is_live : 
+                   (gameState === 'LIVE' || gameState === 'CRIT');
+    
+    if (!isLive) {
+        // Game is not live, don't start polling
+        console.debug(`[Polling] Skipping polling for game ${gameId} - game state: ${gameState || 'unknown'}`);
+        return;
     }
 
     // Stop any existing polling for this game to prevent memory leaks

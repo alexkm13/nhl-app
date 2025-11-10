@@ -277,6 +277,109 @@ async def start_game_ingestion(game_id: str):
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 
+@router.post("/{game_id}/refresh")
+async def refresh_game_predictions(game_id: str):
+    """Incrementally refresh predictions for a game without clearing existing state"""
+    try:
+        # Verify game exists
+        game_data = await fetch_nhl_play_by_play(game_id)
+        if not game_data:
+            raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
+
+        r = get_redis()
+
+        # Check if initial ingestion has been done
+        existing_state = await r.hgetall(f"state:{game_id}")
+        if not existing_state:
+            # No state exists, need to run full ingestion first
+            return {
+                "message": "No existing state found. Please start ingestion first with POST /start",
+                "game_id": game_id,
+                "status": "skipped",
+            }
+
+        # Get last processed event timestamp
+        last_event_ts = await r.get(f"last_event_ts:{game_id}")
+        last_ts = float(last_event_ts) if last_event_ts else 0
+
+        # Process only new events
+        plays = game_data.get("plays", [])
+        new_events = [p for p in plays if p.get("timeInPeriod", "") and
+                      p.get("periodDescriptor", {}).get("number", 0) > 0]
+
+        # Filter for events newer than last processed
+        # Note: NHL API doesn't provide timestamps, so we'll use a sequential approach
+        # Get current event count from state
+        current_event_count = len(new_events)
+        last_event_count = await r.get(f"last_event_count:{game_id}")
+        prev_count = int(last_event_count) if last_event_count else 0
+
+        if current_event_count <= prev_count:
+            return {
+                "message": "No new events to process",
+                "game_id": game_id,
+                "status": "up_to_date",
+            }
+
+        # Get team IDs for event processing
+        home_team_id = game_data.get("homeTeam", {}).get("id")
+        away_team_id = game_data.get("awayTeam", {}).get("id")
+
+        # Process only new events (events beyond prev_count)
+        new_plays = plays[prev_count:]
+
+        # Stream name that feature_state reads from
+        STREAM_EVENTS = "events"
+
+        # Publish only new events to stream (same format as run_ingestion)
+        for play in new_plays:
+            type_code = str(play.get("typeCode", ""))
+            if type_code in ["520", "516", "517", "524"]:
+                continue
+
+            from ..utils import EVENT_TYPE_MAPPING
+            mapped_type = EVENT_TYPE_MAPPING.get(
+                int(type_code) if type_code.isdigit() else 0, "SHOT"
+            )
+
+            details = play.get("details", {})
+            event_owner_id = details.get("eventOwnerTeamId")
+
+            if event_owner_id == home_team_id:
+                team = "HOME"
+            elif event_owner_id == away_team_id:
+                team = "AWAY"
+            else:
+                continue
+
+            period_descriptor = play.get("periodDescriptor", {})
+            period = period_descriptor.get("number", 1)
+            time_in_period = play.get("timeInPeriod", "00:00")
+
+            event_data = {
+                "game_id": game_id,
+                "event_idx": play.get("eventId", 0),
+                "period": str(period),
+                "period_time": time_in_period,
+                "event_type": mapped_type,
+                "team": team,
+            }
+
+            await r.xadd(STREAM_EVENTS, event_data)
+
+        # Update last processed event count
+        await r.set(f"last_event_count:{game_id}", str(current_event_count))
+
+        return {
+            "message": f"Processed {len(new_plays)} new events",
+            "game_id": game_id,
+            "new_events": len(new_plays),
+            "status": "refreshed",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
 @router.get("/{game_id}/status")
 async def get_game_status(game_id: str):
     """Check ingestion and prediction status for a game"""

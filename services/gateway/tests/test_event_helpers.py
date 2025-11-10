@@ -152,6 +152,15 @@ def test_format_goal_description():
     assert "15'" in desc or "15" in desc
 
 
+def test_format_goal_description_empty_net():
+    """Goal descriptions should call out empty-net markers."""
+    desc = format_goal_description(
+        "snap", 25, "", "EV", assists=None, empty_net=True
+    )
+    assert "empty net" in desc.lower()
+    assert "25'" in desc or "25" in desc
+
+
 def test_format_shot_description():
     """Test formatting shot description."""
     # Test saved shot

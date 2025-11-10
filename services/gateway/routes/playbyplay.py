@@ -28,6 +28,7 @@ from event_helpers import (
 )
 
 router = APIRouter(prefix="/v1/games", tags=["playbyplay"])
+CRUCIAL_EVENT_TYPES = {"GOAL", "PENALTY", "PERIOD_END", "PERIOD_START"}
 
 
 # Helper function to get app state (will be injected)
@@ -71,9 +72,7 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                     events = cached_data.get("events", [])
                     if events:
                         crucial_events = [
-                            e
-                            for e in events
-                            if e.get("event_type") in ["GOAL", "PENALTY", "PERIOD_END"]
+                            e for e in events if e.get("event_type") in CRUCIAL_EVENT_TYPES
                         ]
                         crucial_events.sort(
                             key=lambda x: x.get("timestamp", 0), reverse=True
@@ -578,7 +577,12 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                     assists.append(assist2_name)
 
                 event_desc = format_goal_description(
-                    shot_type, distance, game_situation, strength, assists
+                    shot_type,
+                    distance,
+                    game_situation,
+                    strength,
+                    assists,
+                    empty_net=empty_net,
                 )
 
             elif mapped_type == "PENALTY":
@@ -733,11 +737,7 @@ async def get_playbyplay(game_id: str, limit: int = 30):
         events.reverse()
 
         # Separate crucial and non-crucial events
-        crucial_events = [
-            e
-            for e in events
-            if e.get("event_type") in ["GOAL", "PENALTY", "PERIOD_END"]
-        ]
+        crucial_events = [e for e in events if e.get("event_type") in CRUCIAL_EVENT_TYPES]
 
         if is_complete:
             # For completed games: ONLY crucial events (ignore limit)
@@ -745,9 +745,7 @@ async def get_playbyplay(game_id: str, limit: int = 30):
         else:
             # For live games: ALL crucial events + last 4 non-crucial events (ignore limit)
             non_crucial_events = [
-                e
-                for e in events
-                if e.get("event_type") not in ["GOAL", "PENALTY", "PERIOD_END"]
+                e for e in events if e.get("event_type") not in CRUCIAL_EVENT_TYPES
             ]
             # Get last 4 non-crucial events (most recent first after sorting)
             limited_non_crucial = non_crucial_events[:4]
