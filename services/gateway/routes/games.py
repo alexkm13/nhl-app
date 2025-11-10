@@ -341,14 +341,39 @@ async def get_winprob(game_id: str):
                 detail=f"No prediction yet for game {game_id}. Start ingestion with POST /v1/games/{game_id}/start",
             )
     try:
+        # Validate all required fields exist and are valid
+        # Redis hgetall returns all values as strings, so we need to validate and convert
+        game_id_val = data.get("game_id")
+        p_home_win_val = data.get("p_home_win")
+        model_id_val = data.get("model_id")
+        ts_val = data.get("ts")
+        
+        # Check if required fields are missing or empty
+        if not game_id_val or not p_home_win_val or not model_id_val or ts_val is None:
+            raise HTTPException(status_code=404, detail="No prediction yet for this game")
+        
+        # Convert to appropriate types with error handling
+        try:
+            p_home_win_float = float(p_home_win_val)
+            ts_float = float(ts_val)
+        except (ValueError, TypeError) as e:
+            # Handle cases where ts might be "None", empty string, or invalid
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Invalid prediction data format: {str(e)}. Prediction may be incomplete."
+            )
+        
         return WinProb(
-            game_id=data["game_id"],
-            p_home_win=float(data["p_home_win"]),
-            model_id=data["model_id"],
-            ts=float(data["ts"]),
+            game_id=game_id_val,
+            p_home_win=p_home_win_float,
+            model_id=model_id_val,
+            ts=ts_float,
         )
-    except KeyError:
-        raise HTTPException(status_code=404, detail="No prediction yet for this game")
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Catch any other unexpected errors
+        raise HTTPException(status_code=500, detail=f"Error retrieving prediction: {str(e)}")
 
 
 @router.get("/{game_id}/winprob/history")

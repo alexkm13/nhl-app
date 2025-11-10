@@ -344,7 +344,16 @@ async def run_model() -> None:
                     game_id = features["game_id"]
                     home = int(features["home_score"])
                     away = int(features["away_score"])
-                    ts = float(features["ts"])
+                    # Get ts from features, with fallback if missing
+                    ts = features.get("ts")
+                    if ts is None:
+                        # Fallback: use seconds_elapsed if available, otherwise 0
+                        ts = features.get("seconds_elapsed", 0)
+                    try:
+                        ts = float(ts)
+                    except (ValueError, TypeError):
+                        # If ts is invalid, default to 0
+                        ts = 0.0
                     # ts is already relative time from game start (computed in feature_state)
                     seconds_elapsed = ts
                     game_start_ts = None
