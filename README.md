@@ -38,15 +38,6 @@ The system will automatically:
 - Build and run all microservices (ingestor, feature_state, model_svc, gateway)
 - Begin processing game events and generating predictions
 
-### Access Points
-
-| Service | URL | Description |
-|---------|-----|-------------|
-| **Web App** | http://localhost:8000 | Interactive dashboard |
-| **API Docs** | http://localhost:8000/docs | Swagger UI |
-| **Prometheus** | http://localhost:9090 | Metrics |
-| **Grafana** | http://localhost:3000 | Dashboards (admin/admin) |
-
 ### For Local Development
 
 ```bash
@@ -79,97 +70,12 @@ curl http://localhost:8000/v1/games/2025020161/winprob
 }
 ```
 
-### WebSocket Live Stream
-
-```javascript
-const ws = new WebSocket('ws://localhost:8000/v1/stream/2025020161');
-ws.onmessage = (event) => {
-  const prediction = JSON.parse(event.data);
-  console.log(`Home win probability: ${(prediction.p_home_win * 100).toFixed(1)}%`);
-};
-```
-
-### Start Ingestion for a Game
-
-```bash
-curl -X POST http://localhost:8000/v1/games/2025020161/start
-```
-
-## 📸 Architecture
-
-```
-┌──────────┐     ┌──────────────┐     ┌───────────┐     ┌─────────┐
-│ Ingestor │───▶ │Feature State │───▶ │ Model Svc │───▶ │ Gateway │
-│          │     │              │     │           │     │         │
-│ - XADD   │     │ - XREADGROUP │     │ - Predict │     │ - REST  │
-│ events   │     │ - XADD       │     │ - PUBLISH │     │ - WS    │
-└──────────┘     └──────────────┘     └───────────┘     └─────────┘
-     │                   │                   │                 │
-     └───────────────────┴───────────────────┴─────────────────┘
-                                │
-                        ┌───────▼────────┐
-                        │ Redis Streams  │
-                        └────────────────┘
-```
-
 ### Services
 
 - **Ingestor** - Fetches NHL API data and publishes events to Redis Streams
 - **Feature State** - Maintains game state (score, strength, time) and computes 27+ features
 - **Model Service** - Runs ML inference to generate win probability predictions
 - **Gateway** - FastAPI server providing REST endpoints and WebSocket streaming
-
-## 🛠️ Development
-
-### Available Commands
-
-```bash
-# Start all services
-make up
-
-# View logs
-make logs
-
-# Format code
-make fmt
-
-# Lint code
-make lint
-
-# Stop services
-make down
-
-# Rebuild without cache
-make rebuild
-```
-
-### Project Structure
-
-```
-nhl-app/
-├── services/
-│   ├── gateway/          # REST API & WebSocket server
-│   ├── ingestor/         # NHL API event producer
-│   ├── feature_state/    # Game state & feature computation
-│   └── model_svc/        # ML model inference
-├── common/               # Shared utilities
-├── infra/                # Docker compose, Prometheus, Grafana configs
-├── Makefile              # Common commands
-└── requirements.txt      # Python dependencies
-```
-
-### Running Tests
-
-```bash
-# Install test dependencies
-pip install -r requirements-dev.txt
-
-# Run linting
-ruff check .
-
-# Format code
-ruff format .
-```
 
 ## 📊 Monitoring
 
@@ -226,15 +132,6 @@ AB_TEST_CONFIG='{"variants": [...]}'
 - **black** - Code formatter
 - **mypy** - Type checking
 
-## 🚀 Scaling
-
-Scale individual services horizontally:
-
-```bash
-docker compose up --scale feature_state=3 --scale model_svc=2
-```
-
-Each service uses Redis Streams consumer groups for load balancing and exactly-once processing.
 
 ## 📜 License
 
