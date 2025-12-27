@@ -17,15 +17,15 @@ from common.logging_config import setup_logger
 
 logger = setup_logger("gateway.routes.games", level=logging.INFO)
 
-from nhl_api import (
+from nhl_api import (  # noqa: E402
     fetch_nhl_boxscore,
     fetch_nhl_daily_schedule,
     fetch_nhl_play_by_play,
     fetch_team_standings,
 )
-from player_utils import get_player_name, get_player_headshot
-from models import WinProb
-from utils import check_overtime_type, run_ingestion, calculate_win_probability
+from player_utils import get_player_name, get_player_headshot  # noqa: E402
+from models import WinProb  # noqa: E402
+from utils import check_overtime_type, run_ingestion, calculate_win_probability  # noqa: E402
 
 router = APIRouter(prefix="/v1/games", tags=["games"])
 
