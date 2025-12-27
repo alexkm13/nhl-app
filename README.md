@@ -1,12 +1,12 @@
-# GameCast++ 🏒
+# ScoreCast 🏒
 
 **Real-time NHL win probability predictions powered by machine learning**
 
 Have you ever wished you could see live win probability predictions for NHL games, just like ESPN does for football? Want to know the odds in real-time as goals are scored, penalties are called, and momentum shifts? Look no further!
 
-GameCast++ is a production-ready microservices system that processes live NHL game events through Redis Streams, computes win probabilities using ML models, and serves them via REST APIs and WebSocket streams. Built with Python, FastAPI, and designed for horizontal scaling.
+ScoreCast is a production-ready microservices system that processes live NHL game events through Redis Streams, computes win probabilities using ML models, and serves them via REST APIs and WebSocket streams. Built with Python, FastAPI, and designed for horizontal scaling.
 
-![GameCast++ Dashboard](https://via.placeholder.com/800x400?text=GameCast+++Dashboard)
+![ScoreCast Dashboard](https://via.placeholder.com/800x400?text=ScoreCast+Dashboard)
 
 ## 🌟 Features
 
