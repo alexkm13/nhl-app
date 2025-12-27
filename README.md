@@ -1,19 +1,101 @@
-# GameCast++ 
+# GameCast++ 🏒
 
-> Real-time NHL win probability prediction system with microservices architecture
+**Real-time NHL win probability predictions powered by machine learning**
 
-GameCast++ is a production-ready streaming system that processes live NHL game events through a microservices pipeline, computing win probabilities in real-time using machine learning models.
+Have you ever wished you could see live win probability predictions for NHL games, just like ESPN does for football? Want to know the odds in real-time as goals are scored, penalties are called, and momentum shifts? Look no further!
 
-## Features
+GameCast++ is a production-ready microservices system that processes live NHL game events through Redis Streams, computes win probabilities using ML models, and serves them via REST APIs and WebSocket streams. Built with Python, FastAPI, and designed for horizontal scaling.
 
-- **Real-time streaming** using Redis Streams for high-throughput event processing
-- **Microservices architecture** with horizontal scaling support
-- **REST & WebSocket APIs** for live win probability predictions
-- **Observability** with Prometheus metrics and Grafana dashboards
-- **Time-series storage** with TimescaleDB for historical analysis
-- **Event-driven design** with back-pressure handling and consumer groups
+![GameCast++ Dashboard](https://via.placeholder.com/800x400?text=GameCast+++Dashboard)
 
-## Architecture
+## 🌟 Features
+
+- **Real-time predictions** - Sub-100ms win probability updates as game events occur
+- **Live WebSocket streaming** - Push updates to clients instantly
+- **Microservices architecture** - Horizontally scalable event processing pipeline
+- **ML-powered** - LightGBM models trained on historical NHL data
+- **Production-ready** - Prometheus metrics, Grafana dashboards, health checks
+- **Event-driven** - Redis Streams with consumer groups for reliable processing
+
+## 📀 Installation
+
+### Quick Start with Docker
+
+The easiest way to get started:
+
+```bash
+# Clone the repository
+git clone https://github.com/alexkm13/nhl-app.git
+cd nhl-app
+
+# Start all services
+make up
+# or: docker compose up --build
+```
+
+The system will automatically:
+- Start Redis, TimescaleDB, Prometheus, and Grafana
+- Build and run all microservices (ingestor, feature_state, model_svc, gateway)
+- Begin processing game events and generating predictions
+
+### Access Points
+
+| Service | URL | Description |
+|---------|-----|-------------|
+| **Web App** | http://localhost:8000 | Interactive dashboard |
+| **API Docs** | http://localhost:8000/docs | Swagger UI |
+| **Prometheus** | http://localhost:9090 | Metrics |
+| **Grafana** | http://localhost:3000 | Dashboards (admin/admin) |
+
+### For Local Development
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+pip install -r requirements-dev.txt  # For linting/testing
+
+# Run services individually
+python -m services.gateway.main
+python -m services.ingestor.main
+python -m services.feature_state.main
+python -m services.model_svc.main
+```
+
+## 🎮 Usage
+
+### Get Win Probability for a Game
+
+```bash
+curl http://localhost:8000/v1/games/2025020161/winprob
+```
+
+**Response:**
+```json
+{
+  "game_id": "2025020161",
+  "p_home_win": 0.6234,
+  "model_id": "lightgbm_20251104_121934_d9b5b03f",
+  "ts": 1699123456.78
+}
+```
+
+### WebSocket Live Stream
+
+```javascript
+const ws = new WebSocket('ws://localhost:8000/v1/stream/2025020161');
+ws.onmessage = (event) => {
+  const prediction = JSON.parse(event.data);
+  console.log(`Home win probability: ${(prediction.p_home_win * 100).toFixed(1)}%`);
+};
+```
+
+### Start Ingestion for a Game
+
+```bash
+curl -X POST http://localhost:8000/v1/games/2025020161/start
+```
+
+## 📸 Architecture
 
 ```
 ┌──────────┐     ┌──────────────┐     ┌───────────┐     ┌─────────┐
@@ -30,97 +112,19 @@ GameCast++ is a production-ready streaming system that processes live NHL game e
                         └────────────────┘
 ```
 
-### Services Overview
+### Services
 
-| Service | Purpose | Technology |
-|---------|---------|------------|
-| **Ingestor** | Generates synthetic NHL game events | Python, Redis XADD |
-| **Feature State** | Maintains game state, derives features | Python, Redis Streams |
-| **Model Service** | Computes win probabilities | Python, NumPy, Machine Learning |
-| **Gateway** | REST API & WebSocket streaming | FastAPI, Uvicorn |
-| **TimescaleDB** | Historical data storage | PostgreSQL extension |
-| **Prometheus** | Metrics collection | Time-series DB |
-| **Grafana** | Dashboards & visualization | Analytics platform |
+- **Ingestor** - Fetches NHL API data and publishes events to Redis Streams
+- **Feature State** - Maintains game state (score, strength, time) and computes 27+ features
+- **Model Service** - Runs ML inference to generate win probability predictions
+- **Gateway** - FastAPI server providing REST endpoints and WebSocket streaming
 
-## Quick Start
+## 🛠️ Development
 
-### Prerequisites
-
-- Docker & Docker Compose
-- Python 3.11+ (for local development)
-
-### Installation & Run
+### Available Commands
 
 ```bash
-# Clone the repository
-git clone git@github.com:alexkm13/nhl-app.git
-cd nhl-app
-
 # Start all services
-make up
-# or: docker compose up --build
-
-# Check service health
-docker compose logs -f --tail=50
-```
-
-The system will automatically:
-1. Start Redis, TimescaleDB, Prometheus, and Grafana
-2. Build and run all microservices
-3. Generate synthetic game events for `TEST_GAME`
-4. Compute and broadcast win probabilities
-
-### Access Points
-
-| Service | URL | Description |
-|---------|-----|-------------|
-| **API Gateway** | http://localhost:8000 | REST API & WebSocket |
-| **API Docs** | http://localhost:8000/docs | Interactive Swagger UI |
-| **Prometheus** | http://localhost:9090 | Metrics endpoint |
-| **Grafana** | http://localhost:3000 | Dashboards (`admin/admin`) |
-
-## 📖 API Usage
-
-### Get Latest Win Probability
-
-```bash
-curl http://localhost:8000/v1/games/TEST_GAME/winprob
-```
-
-**Response:**
-```json
-{
-  "game_id": "TEST_GAME",
-  "p_home_win": 0.6234,
-  "model_id": "baseline-logit-v0",
-  "ts": 1699123456.78
-}
-```
-
-### WebSocket Live Stream
-
-```bash
-# Using websocat
-websocat ws://localhost:8000/v1/stream/TEST_GAME
-
-# Or connect from your app
-const ws = new WebSocket('ws://localhost:8000/v1/stream/TEST_GAME');
-ws.onmessage = (event) => {
-  const prediction = JSON.parse(event.data);
-  console.log('Win probability:', prediction.p_home_win);
-};
-```
-
-### API Documentation
-
-- **Swagger UI:** http://localhost:8000/docs
-- **ReDoc:** http://localhost:8000/redoc
-- See [docs/API.md](docs/API.md) for detailed API specs
-
-## Testing & Development
-
-```bash
-# Run services
 make up
 
 # View logs
@@ -132,22 +136,49 @@ make fmt
 # Lint code
 make lint
 
-# Clean up
+# Stop services
 make down
 
-# Test locally (without Docker)
-pip install -r requirements.txt
-python -m services.gateway.main  # Run gateway locally
+# Rebuild without cache
+make rebuild
 ```
 
-## Monitoring
+### Project Structure
+
+```
+nhl-app/
+├── services/
+│   ├── gateway/          # REST API & WebSocket server
+│   ├── ingestor/         # NHL API event producer
+│   ├── feature_state/    # Game state & feature computation
+│   └── model_svc/        # ML model inference
+├── common/               # Shared utilities
+├── infra/                # Docker compose, Prometheus, Grafana configs
+├── Makefile              # Common commands
+└── requirements.txt      # Python dependencies
+```
+
+### Running Tests
+
+```bash
+# Install test dependencies
+pip install -r requirements-dev.txt
+
+# Run linting
+ruff check .
+
+# Format code
+ruff format .
+```
+
+## 📊 Monitoring
 
 ### Prometheus Metrics
 
 - Request latency histograms
 - Total predictions produced
 - WebSocket connection count
-- Processing time per event
+- Event processing throughput
 
 Access at: http://localhost:9090
 
@@ -161,96 +192,67 @@ Pre-configured dashboards show:
 
 Access at: http://localhost:3000 (login: `admin/admin`)
 
-## Project Structure
+## 🔧 Configuration
 
-```
-nhl-app/
-├── services/
-│   ├── gateway/          # REST API & WebSocket server
-│   ├── ingestor/         # Event producer
-│   ├── feature_state/    # State management
-│   └── model_svc/        # ML predictions
-├── infra/
-│   ├── docker-compose.yaml   # Orchestration
-│   ├── prometheus/            # Metrics config
-│   ├── grafana/              # Dashboard config
-│   └── timescaledb/          # DB schema
-├── docs/
-│   ├── API.md           # API documentation
-│   ├── DESIGN.md        # Architecture design
-│   ├── RUNBOOK.md       # Operations guide
-│   └── BENCHMARK.md     # Performance benchmarks
-├── Makefile             # Common commands
-└── requirements.txt     # Python dependencies
+Environment variables can be set in `.env` file:
+
+```bash
+# Database
+DATABASE_URL=postgresql://postgres:postgres@timescaledb:5432/gamecast
+
+# Redis
+REDIS_URL=redis://redis:6379/0
+
+# Model
+MODEL_ID=lightgbm_20251104_121934_d9b5b03f
+
+# A/B Testing (optional)
+AB_TEST_ENABLED=false
+AB_TEST_CONFIG='{"variants": [...]}'
 ```
 
-## Data Flow
+## 📦 Dependencies
 
-1. **Ingestor** generates synthetic NHL game events (goals, shots, penalties)
-2. **Feature State** processes events, maintains score/strength state
-3. **Model Service** computes win probability from game state
-4. **Gateway** serves predictions via REST (cached) and WebSocket (live)
+### Core
+- **fastapi** - Modern async web framework
+- **redis** - Streams for event processing
+- **psycopg** - PostgreSQL/TimescaleDB driver
+- **numpy** - Numerical computations
+- **lightgbm** - ML model inference
 
-### Redis Streams
+### Dev Dependencies
+- **pytest** - Testing framework
+- **ruff** - Fast Python linter
+- **black** - Code formatter
+- **mypy** - Type checking
 
-- `events` → Raw play-by-play events
-- `features` → Derived state snapshots  
-- `predictions` → Model outputs
+## 🚀 Scaling
 
-Each service uses consumer groups for horizontal scaling and back-pressure handling.
+Scale individual services horizontally:
 
-## 🔌 Production Considerations
-
-### Scaling
-
-```yaml
-# Scale individual services
+```bash
 docker compose up --scale feature_state=3 --scale model_svc=2
 ```
 
-### Migration to Kafka
+Each service uses Redis Streams consumer groups for load balancing and exactly-once processing.
 
-The system is designed to swap Redis Streams for Kafka without changing service logic:
-
-```python
-# Replace Redis Streams with aiokafka
-# Same consumer group semantics apply
-```
-
-### Security
-
-- Add HMAC token validation in gateway
-- TLS termination at load balancer
-- Database connection pooling
-- Rate limiting per client
-
-## Documentation
-
-- [Architecture Design](docs/DESIGN.md) - System design & patterns
-- [API Reference](docs/API.md) - Endpoint specifications
-- [Runbook](docs/RUNBOOK.md) - Operations & troubleshooting
-- [Benchmarks](docs/BENCHMARK.md) - Performance profiles
-
-## Technology Stack
-
-- **Language:** Python 3.11+
-- **Streaming:** Redis Streams (can swap to Kafka)
-- **API:** FastAPI, Uvicorn
-- **Database:** TimescaleDB (PostgreSQL)
-- **ML:** NumPy, scikit-learn (extensible)
-- **Observability:** Prometheus, Grafana
-- **Orchestration:** Docker Compose
-
-## 📈 Next Steps
-
-- [ ] Production-grade ML model training pipeline
-- [ ] Real NHL data integration
-- [ ] Advanced betting market calculations
-- [ ] A/B testing framework for models
-- [ ] Multi-tenant isolation
-- [ ] CI/CD with automated testing
-
-## 📄 License
+## 📜 License
 
 MIT License - See LICENSE file for details
 
+_Disclaimer: Not affiliated with the NHL._
+
+## 🤝 Contributing
+
+Contributions welcome! Feel free to:
+- Open issues for bugs or feature requests
+- Submit pull requests
+- Improve documentation
+
+## 📧 Contact
+
+Questions? Open an issue on GitHub!
+
+---
+
+**If you like what you see, consider giving it a star ⭐**
