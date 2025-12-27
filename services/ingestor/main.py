@@ -67,7 +67,9 @@ async def fetch_nhl_play_by_play(game_id: str) -> dict:
                 )
                 return None
     except Exception as e:
-        logger.error(f"Error fetching NHL play-by-play for game {game_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error fetching NHL play-by-play for game {game_id}: {e}", exc_info=True
+        )
         return None
 
 
@@ -108,7 +110,12 @@ async def produce_synthetic_game(r: Redis, game_id: str) -> None:
         # Random event selection
         ev_choice = random.choices(
             ["SHOT", "FACEOFF", "HIT", "PENALTY"],
-            weights=[EVENT_WEIGHT_SHOT, EVENT_WEIGHT_FACEOFF, EVENT_WEIGHT_HIT, EVENT_WEIGHT_PENALTY],
+            weights=[
+                EVENT_WEIGHT_SHOT,
+                EVENT_WEIGHT_FACEOFF,
+                EVENT_WEIGHT_HIT,
+                EVENT_WEIGHT_PENALTY,
+            ],
             k=1,
         )[0]
         team = random.choice(["HOME", "AWAY"])
@@ -136,7 +143,9 @@ async def produce_synthetic_game(r: Redis, game_id: str) -> None:
         # Insert into TimescaleDB (optional)
         try:
             if DATABASE_URL:
-                async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
+                async with await psycopg.AsyncConnection.connect(
+                    DATABASE_URL, autocommit=True
+                ) as conn:
                     async with conn.cursor() as cur:
                         await cur.execute(
                             "INSERT INTO events(ts, game_id, team, event_type, strength, x, y, shot_quality) VALUES (to_timestamp(%s), %s, %s, %s, %s, %s, %s, %s)",
@@ -279,7 +288,9 @@ async def produce_nhl_game(r: Redis, game_id: str) -> None:
                     team = "AWAY" if defending_side == "right" else "HOME"
                 else:
                     # Last resort: assume home team
-                    logger.error(f"Goal missing both eventOwnerTeamId and homeTeamDefendingSide for game {game_id}")
+                    logger.error(
+                        f"Goal missing both eventOwnerTeamId and homeTeamDefendingSide for game {game_id}"
+                    )
                     team = "HOME"
             else:
                 # For non-crucial events, fallback to defending side if available
@@ -463,7 +474,9 @@ async def produce_nhl_game(r: Redis, game_id: str) -> None:
         # Insert into TimescaleDB
         try:
             if DATABASE_URL:
-                async with await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=True) as conn:
+                async with await psycopg.AsyncConnection.connect(
+                    DATABASE_URL, autocommit=True
+                ) as conn:
                     async with conn.cursor() as cur:
                         await cur.execute(
                             "INSERT INTO events(ts, game_id, team, event_type, strength, x, y, shot_quality) VALUES (to_timestamp(%s), %s, %s, %s, %s, %s, %s, %s)",

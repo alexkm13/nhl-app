@@ -66,7 +66,7 @@ class ModelLoader:
 
             # Try experiment path only if model_id matches expected pattern (type_timestamp_hash)
             # Handle non-standard model IDs gracefully
-            model_id_parts = self.model_id.split('_')
+            model_id_parts = self.model_id.split("_")
             if len(model_id_parts) >= 3:
                 try:
                     # Assume format: type_timestamp_hash

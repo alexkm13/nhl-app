@@ -96,13 +96,17 @@ async def get_db_connection() -> Optional[psycopg.AsyncConnection]:
     if not DATABASE_URL:
         return None
     if db_conn is None or db_conn.closed:
-        db_conn = await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=DATABASE_AUTOCOMMIT)
+        db_conn = await psycopg.AsyncConnection.connect(
+            DATABASE_URL, autocommit=DATABASE_AUTOCOMMIT
+        )
     return db_conn
 
 
 # Prometheus metrics
 PRED_COUNTER = Counter("model_predictions_total", "Total predictions produced")
-PRED_SKIPPED = Counter("model_predictions_skipped_total", "Predictions skipped by throttling")
+PRED_SKIPPED = Counter(
+    "model_predictions_skipped_total", "Predictions skipped by throttling"
+)
 INFERENCE_TIME = Histogram(
     "model_inference_seconds",
     "Pure model inference time",
@@ -161,7 +165,7 @@ async def predict_async(model, model_type: str, raw_features: Dict) -> float:
 
     if inference_time > 0.1:  # Log slow predictions (>100ms)
         logger.warning(
-            f"Slow inference: {inference_time*1000:.1f}ms for model_type={model_type}"
+            f"Slow inference: {inference_time * 1000:.1f}ms for model_type={model_type}"
         )
 
     return p_home
@@ -363,10 +367,14 @@ async def run_model() -> None:
                             game_start_ts = float(start_ts_raw)
                             # Validate that timestamp is reasonable (not too far in past/future)
                             if game_start_ts < 0 or game_start_ts > time.time() + 86400:
-                                logger.warning(f"Invalid game_start_ts from Redis: {game_start_ts}")
+                                logger.warning(
+                                    f"Invalid game_start_ts from Redis: {game_start_ts}"
+                                )
                                 game_start_ts = None
                         except (TypeError, ValueError) as e:
-                            logger.warning(f"Failed to parse game_start_ts from Redis: {e}")
+                            logger.warning(
+                                f"Failed to parse game_start_ts from Redis: {e}"
+                            )
                             game_start_ts = None
                     prediction_event_ts = (
                         game_start_ts + seconds_elapsed
@@ -407,7 +415,11 @@ async def run_model() -> None:
                     # Smart throttling: check if we should predict for this event
                     current_time = time.time()
                     if not should_predict(
-                        game_id, raw_features, last_prediction_times, last_forced_prediction_times, current_time
+                        game_id,
+                        raw_features,
+                        last_prediction_times,
+                        last_forced_prediction_times,
+                        current_time,
                     ):
                         # Skip this prediction to reduce load
                         PRED_SKIPPED.inc()
@@ -504,7 +516,9 @@ async def run_model() -> None:
                                 if not db_conn.closed:
                                     await db_conn.close()
                             except Exception as close_error:
-                                logger.warning(f"Error closing DB connection: {close_error}")
+                                logger.warning(
+                                    f"Error closing DB connection: {close_error}"
+                                )
                             finally:
                                 db_conn = None
                     finally:

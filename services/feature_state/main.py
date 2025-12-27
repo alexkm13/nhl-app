@@ -64,7 +64,9 @@ async def get_db_connection() -> Optional[psycopg.AsyncConnection]:
     if not DATABASE_URL:
         return None
     if db_conn is None or db_conn.closed:
-        db_conn = await psycopg.AsyncConnection.connect(DATABASE_URL, autocommit=DATABASE_AUTOCOMMIT)
+        db_conn = await psycopg.AsyncConnection.connect(
+            DATABASE_URL, autocommit=DATABASE_AUTOCOMMIT
+        )
     return db_conn
 
 

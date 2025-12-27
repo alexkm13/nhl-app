@@ -15,8 +15,12 @@ def get_logger():
     if logger is None:
         import logging
         import sys
-        sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+
+        sys.path.insert(
+            0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+        )
         from common.logging_config import setup_logger
+
         logger = setup_logger("gateway.db_pool", level=logging.INFO)
     return logger
 
@@ -25,7 +29,9 @@ def get_logger():
 _db_pool: Optional[AsyncConnectionPool] = None
 
 
-async def init_db_pool(database_url: Optional[str] = None, min_size: int = 2, max_size: int = 10):
+async def init_db_pool(
+    database_url: Optional[str] = None, min_size: int = 2, max_size: int = 10
+):
     """
     Initialize the database connection pool.
 
@@ -53,7 +59,9 @@ async def init_db_pool(database_url: Optional[str] = None, min_size: int = 2, ma
             max_size=max_size,
             open=True,
         )
-        get_logger().info(f"Database connection pool initialized (min={min_size}, max={max_size})")
+        get_logger().info(
+            f"Database connection pool initialized (min={min_size}, max={max_size})"
+        )
     except Exception as e:
         get_logger().error(f"Failed to initialize database connection pool: {e}")
         raise
@@ -81,7 +89,9 @@ async def get_db_connection():
         RuntimeError: If pool is not initialized
     """
     if _db_pool is None:
-        raise RuntimeError("Database connection pool not initialized. Call init_db_pool() first.")
+        raise RuntimeError(
+            "Database connection pool not initialized. Call init_db_pool() first."
+        )
 
     async with _db_pool.connection() as conn:
         yield conn

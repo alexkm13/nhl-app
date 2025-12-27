@@ -104,9 +104,10 @@ class ABTestRouter:
         # Use deterministic SHA256 hash instead of Python's built-in hash()
         # Python's hash() is randomized per process, breaking consistent routing
         import hashlib
-        hash_bytes = hashlib.sha256(hash_key.encode('utf-8')).digest()
+
+        hash_bytes = hashlib.sha256(hash_key.encode("utf-8")).digest()
         # Convert to integer and map to 0-100 range
-        hash_value = int.from_bytes(hash_bytes[:4], byteorder='big') % 100
+        hash_value = int.from_bytes(hash_bytes[:4], byteorder="big") % 100
 
         # Route based on cumulative percentages
         cumulative = 0.0
@@ -242,6 +243,7 @@ class ABTestTracker:
             timestamp: Timestamp of prediction
         """
         import asyncio
+
         loop = asyncio.get_event_loop()
         # Run blocking DB call in executor to avoid stalling event loop
         await loop.run_in_executor(

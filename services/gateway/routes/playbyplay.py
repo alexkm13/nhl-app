@@ -42,6 +42,7 @@ def get_redis() -> Redis:
 async def _refresh_playbyplay_cache(game_id: str, r: Redis):
     """Background task to refresh play-by-play cache for live games."""
     import logging
+
     logger = logging.getLogger("gateway")
 
     try:
@@ -51,7 +52,9 @@ async def _refresh_playbyplay_cache(game_id: str, r: Redis):
         # Cache refresh logic here - simplified for now
         logger.info(f"Refreshed play-by-play cache for {game_id}")
     except Exception as e:
-        logger.error(f"Error refreshing play-by-play cache for {game_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error refreshing play-by-play cache for {game_id}: {e}", exc_info=True
+        )
 
 
 @router.get("/{game_id}/playbyplay")
@@ -72,7 +75,9 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                     events = cached_data.get("events", [])
                     if events:
                         crucial_events = [
-                            e for e in events if e.get("event_type") in CRUCIAL_EVENT_TYPES
+                            e
+                            for e in events
+                            if e.get("event_type") in CRUCIAL_EVENT_TYPES
                         ]
                         crucial_events.sort(
                             key=lambda x: x.get("timestamp", 0), reverse=True
@@ -100,7 +105,9 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                                     try:
                                         task.result()
                                     except Exception as e:
-                                        print(f"[gateway] Error refreshing playbyplay cache: {e}")
+                                        print(
+                                            f"[gateway] Error refreshing playbyplay cache: {e}"
+                                        )
 
                                 task.add_done_callback(handle_refresh_exception)
 
@@ -714,12 +721,26 @@ async def get_playbyplay(game_id: str, limit: int = 30):
                 unique_events.append(event)
             elif not event_id:
                 # Validate all properties exist before creating dedupKey
-                timestamp = event.get('timestamp') if event.get('timestamp') is not None else ''
-                event_type = event.get('event_type') if event.get('event_type') is not None else ''
-                player_id = event.get('player_id') if event.get('player_id') is not None else ''
-                period = event.get('period') if event.get('period') is not None else ''
-                time_in_period = event.get('time_in_period') if event.get('time_in_period') is not None else ''
-                dedup_key = f"{timestamp}-{event_type}-{player_id}-{period}-{time_in_period}"
+                timestamp = (
+                    event.get("timestamp") if event.get("timestamp") is not None else ""
+                )
+                event_type = (
+                    event.get("event_type")
+                    if event.get("event_type") is not None
+                    else ""
+                )
+                player_id = (
+                    event.get("player_id") if event.get("player_id") is not None else ""
+                )
+                period = event.get("period") if event.get("period") is not None else ""
+                time_in_period = (
+                    event.get("time_in_period")
+                    if event.get("time_in_period") is not None
+                    else ""
+                )
+                dedup_key = (
+                    f"{timestamp}-{event_type}-{player_id}-{period}-{time_in_period}"
+                )
                 if dedup_key not in seen_ids:
                     seen_ids.add(dedup_key)
                     event["id"] = f"{game_id}-{len(unique_events)}"
@@ -737,7 +758,9 @@ async def get_playbyplay(game_id: str, limit: int = 30):
         events.reverse()
 
         # Separate crucial and non-crucial events
-        crucial_events = [e for e in events if e.get("event_type") in CRUCIAL_EVENT_TYPES]
+        crucial_events = [
+            e for e in events if e.get("event_type") in CRUCIAL_EVENT_TYPES
+        ]
 
         if is_complete:
             # For completed games: ONLY crucial events (ignore limit)

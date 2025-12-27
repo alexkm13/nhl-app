@@ -221,7 +221,9 @@ def format_goal_description(
     if distance is not None:
         desc = f"{distance}' {empty_net_label}{game_situation}{strength_label}{shot_desc_lower} goal"
     else:
-        desc = f"{empty_net_label}{game_situation}{strength_label}{shot_desc_lower} goal"
+        desc = (
+            f"{empty_net_label}{game_situation}{strength_label}{shot_desc_lower} goal"
+        )
 
     if assists:
         assist_text = ", ".join(assists)

@@ -46,7 +46,11 @@ app = FastAPI(title="GameCast++ Gateway", version="1.0.0")
 # Add CORS middleware
 # Get allowed origins from environment variable or use wildcard for development
 CORS_ORIGINS = os.environ.get("CORS_ALLOWED_ORIGINS", CORS_ALLOW_ALL)
-allowed_origins = [origin.strip() for origin in CORS_ORIGINS.split(",")] if CORS_ORIGINS != CORS_ALLOW_ALL else [CORS_ALLOW_ALL]
+allowed_origins = (
+    [origin.strip() for origin in CORS_ORIGINS.split(",")]
+    if CORS_ORIGINS != CORS_ALLOW_ALL
+    else [CORS_ALLOW_ALL]
+)
 
 app.add_middleware(
     CORSMiddleware,
