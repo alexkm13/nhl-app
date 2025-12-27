@@ -90,7 +90,7 @@ class ModelLoader:
                     os.path.join(training_dir, "models", self.model_id, "model.pkl"),
                 ]
             )
-            
+
             # Try experiment path for relative paths too (if pattern matches)
             if len(model_id_parts) >= 3:
                 try:

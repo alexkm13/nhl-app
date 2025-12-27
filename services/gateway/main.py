@@ -28,6 +28,8 @@ from common.constants import (
 from common.logging_config import setup_logger
 from common.health import check_redis_health, create_health_response
 from common.rate_limiter import RateLimitMiddleware
+from common.api_key_middleware import APIKeyMiddleware, get_api_key_middleware_config
+from db_pool import init_db_pool, close_db_pool
 from routes.games import router as games_router
 from routes.playbyplay import router as playbyplay_router
 from routes.standings import router as standings_router
@@ -56,6 +58,14 @@ app.add_middleware(
 
 # Add rate limiting middleware
 app.add_middleware(RateLimitMiddleware)
+
+# Add API key authentication middleware (if enabled)
+api_key_enabled, api_keys = get_api_key_middleware_config()
+if api_key_enabled:
+    app.add_middleware(APIKeyMiddleware, enabled=True, api_keys=api_keys)
+    logger.info(f"API key authentication enabled with {len(api_keys)} key(s)")
+else:
+    logger.info("API key authentication disabled")
 
 # Serve static files
 static_dir = os.path.join(os.path.dirname(__file__), "static")
@@ -195,6 +205,11 @@ async def metrics():
 async def startup():
     """Initialize resources on startup."""
     app.state.redis = Redis.from_url(REDIS_URL, decode_responses=True)
+
+    # Initialize database connection pool
+    if DATABASE_URL:
+        await init_db_pool(DATABASE_URL, min_size=2, max_size=10)
+
     logger.info("Gateway service started")
 
 
@@ -202,4 +217,8 @@ async def startup():
 async def shutdown():
     """Cleanup resources on shutdown."""
     await app.state.redis.aclose()
+
+    # Close database connection pool
+    await close_db_pool()
+
     logger.info("Gateway service shutting down")

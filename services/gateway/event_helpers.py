@@ -357,7 +357,7 @@ def parse_situation_code(situation: str) -> tuple:
     # Move bounds check before int conversion to improve error handling
     if not situation or len(situation) < 4:
         return 5, 5  # Default to even strength
-    
+
     try:
         # Validate indices exist before accessing
         if len(situation) >= 2 and situation[1].isdigit():
@@ -367,7 +367,7 @@ def parse_situation_code(situation: str) -> tuple:
                 away_skaters = 5
         else:
             away_skaters = 5
-        
+
         if len(situation) >= 4 and situation[3].isdigit():
             home_skaters = int(situation[3])
             # Validate home_skaters is in valid range (0-6)
@@ -375,7 +375,7 @@ def parse_situation_code(situation: str) -> tuple:
                 home_skaters = 5
         else:
             home_skaters = 5
-        
+
         return home_skaters, away_skaters
     except (ValueError, IndexError, TypeError):
         return 5, 5  # Default to even strength on any error

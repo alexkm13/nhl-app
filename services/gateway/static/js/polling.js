@@ -1,6 +1,6 @@
 // Polling interval constants (named constants for all intervals)
 const POLLING_INTERVALS = {
-    GAMES_LIST: 2000,           // 2 seconds
+    GAMES_LIST: 30000,           // 30 seconds for homepage refresh
     GOAL_CHECK: 500,             // 500ms for fast goal detection
     FEED_UPDATE: 1000,           // 1 second for feed updates
     LIVE_SCORE: 2000,            // 2 seconds
@@ -66,8 +66,19 @@ function startGamesListPolling(date) {
                         // Re-render games list with updated data
                         const gamesList = document.getElementById('gamesList');
                         if (gamesList) {
-                            // Use the same rendering logic as loadGamesList
-                            gamesList.innerHTML = renderAllGameCards(data.games);
+                            // Check if data actually changed to prevent flickering
+                            const newDataSignature = JSON.stringify(data.games.map(g =>
+                                `${g.game_id}-${g.home_score}-${g.away_score}-${g.period}-${g.time_in_period}`
+                            ));
+                            const currentDataSignature = gamesList.dataset.lastSignature || '';
+
+                            // Only update if data changed
+                            if (newDataSignature !== currentDataSignature) {
+                                const scrollTop = gamesList.scrollTop;  // Preserve scroll position
+                                gamesList.innerHTML = renderAllGameCards(data.games);
+                                gamesList.scrollTop = scrollTop;  // Restore scroll position
+                                gamesList.dataset.lastSignature = newDataSignature;
+                            }
                         }
                     }
                 }

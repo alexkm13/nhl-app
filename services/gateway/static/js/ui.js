@@ -99,60 +99,98 @@ async function displayResults(data) {
     }
 
     const gameId = data.game.id;
-    const isLive = data.game.is_live || data.game.game_state === 'LIVE' || data.game.game_state === 'CRIT';
-    const isFinal = data.game.game_state === 'OFF' || data.game.game_state === 'FINAL';
+    const gameState = data.game.game_state || '';
+    const isLive = data.game.is_live || gameState === 'LIVE' || gameState === 'CRIT';
+    const isFinal = gameState === 'OFF' || gameState === 'FINAL';
+    
+    // Set currentGameIsLive IMMEDIATELY based on actual game_state
+    // This must happen BEFORE any triggerModelRefresh calls to prevent refreshes on offline games
+    currentGameId = gameId;
+    currentGameIsLive = (gameState === 'LIVE' || gameState === 'CRIT');
     
     // Check game status before starting ingestion
-    // Only start ingestion if data doesn't exist yet or if game is LIVE/CRIT
+    // Only start ingestion if:
+    // 1. No data exists yet (has_prediction === false AND has_state === false), OR
+    // 2. Game is truly LIVE/CRIT (game_state === 'LIVE' OR game_state === 'CRIT')
+    // Otherwise skip /start to keep cached feed intact
     if (!ingestionStartedForGames.has(gameId)) {
         ingestionStartedForGames.add(gameId);
         
-        // First check if data already exists
+        // First check if data already exists and get game_state from status
         try {
             const statusResponse = await fetch(`${API_BASE}/v1/games/${gameId}/status`);
             if (statusResponse.ok) {
                 const statusData = await statusResponse.json();
                 
-                // If we already have prediction or state data, skip starting ingestion
-                // Just render with cached data (which will be loaded by displayResults)
-                if (statusData.has_prediction === true || statusData.has_state === true) {
-                    console.log(`[Ingestion] Game ${gameId} already has data (has_prediction: ${statusData.has_prediction}, has_state: ${statusData.has_state}), skipping ingestion`);
-                    // Data exists, so we can render immediately - displayResults will handle fetching
-                } else if (isLive || isFinal) {
-                    // No data exists yet, start ingestion for live or final games
+                // Get game_state from status response if available, otherwise use data.game.game_state
+                const statusGameState = statusData.game_state || gameState;
+                const isTrulyLive = statusGameState === 'LIVE' || statusGameState === 'CRIT';
+                const hasData = statusData.has_prediction === true || statusData.has_state === true;
+                
+                // Only start ingestion if:
+                // - No data exists yet (hasData === false), OR
+                // - Game is truly LIVE/CRIT (isTrulyLive === true)
+                // For completed games with data, skip ingestion to keep cached feed intact
+                if (hasData && !isTrulyLive) {
+                    console.log(`[Ingestion] Game ${gameId} is completed (${statusGameState}) and has data, skipping ingestion to preserve cached feed`);
+                    // Data exists and game is not live, so we can render immediately - displayResults will handle fetching
+                } else if (!hasData || isTrulyLive) {
+                    // No data exists yet OR game is truly live - start ingestion
+                    if (isTrulyLive) {
+                        console.log(`[Ingestion] Game ${gameId} is LIVE/CRIT (${statusGameState}), starting ingestion`);
+                    } else {
+                        console.log(`[Ingestion] Game ${gameId} has no data yet, starting ingestion for backfill`);
+                    }
                     startIngestionForGame(gameId).catch(() => {
                         // Silently fail - ingestion may already be in progress or game may not exist
                         // Remove from set if it fails so we can retry later if needed
                         ingestionStartedForGames.delete(gameId);
                     });
                 } else {
-                    // Game is not live and not final, and no data exists
-                    // This is a pre-game scenario, no need to start ingestion yet
+                    // Game is not live and has data - skip ingestion
+                    console.log(`[Ingestion] Game ${gameId} is not live and has data, skipping ingestion`);
                     ingestionStartedForGames.delete(gameId);
                 }
             } else {
-                // Status check failed, fall back to starting ingestion for live/final games
-                if (isLive || isFinal) {
+                // Status check failed, check game_state from data to decide
+                if (isLive) {
+                    // Game appears to be live based on data, start ingestion
+                    console.log(`[Ingestion] Status check failed for game ${gameId}, but game appears live, starting ingestion`);
+                    startIngestionForGame(gameId).catch(() => {
+                        ingestionStartedForGames.delete(gameId);
+                    });
+                } else if (isFinal) {
+                    // Game is final, but status check failed - try ingestion for backfill if no data exists
+                    console.log(`[Ingestion] Status check failed for final game ${gameId}, attempting backfill`);
                     startIngestionForGame(gameId).catch(() => {
                         ingestionStartedForGames.delete(gameId);
                     });
                 } else {
+                    // Pre-game scenario, no need to start ingestion yet
                     ingestionStartedForGames.delete(gameId);
                 }
             }
         } catch (error) {
-            // Status check error, fall back to starting ingestion for live/final games
+            // Status check error, check game_state from data to decide
             console.warn(`[Ingestion] Status check failed for game ${gameId}:`, error);
-            if (isLive || isFinal) {
+            if (isLive) {
+                // Game appears to be live based on data, start ingestion
+                startIngestionForGame(gameId).catch(() => {
+                    ingestionStartedForGames.delete(gameId);
+                });
+            } else if (isFinal) {
+                // Game is final, but status check failed - try ingestion for backfill if no data exists
                 startIngestionForGame(gameId).catch(() => {
                     ingestionStartedForGames.delete(gameId);
                 });
             } else {
+                // Pre-game scenario, no need to start ingestion yet
                 ingestionStartedForGames.delete(gameId);
             }
         }
-    } else if (isLive) {
+    } else if (currentGameIsLive) {
         // For live games we've already started, trigger a refresh to get latest state
+        // Only do this if currentGameIsLive is true (set above based on game_state)
         triggerModelRefresh(gameId).catch(() => {
             // Silently fail
         });
@@ -602,7 +640,7 @@ async function displayResults(data) {
                     </div>
                 </div>
                 <div class="live-status-info">
-                    ${gameIsLive ? '<div class="live-indicator-red"></div>' : ''}
+                    ${(gameState === 'LIVE' || gameState === 'CRIT') ? '<div class="live-indicator-red"></div>' : ''}
                     ${gameIsFinal ? 
                         `<div class="live-time-remaining" style="font-size: 1.1em; font-weight: 500;">${statusDisplay}</div>
                          <div class="live-period" style="display: none;"></div>` :
@@ -613,7 +651,7 @@ async function displayResults(data) {
             </div>
             <div class="win-prob">
                 <div class="win-prob-title">Win Probability</div>
-                ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, gameIsLive, homeLogo, awayLogo, score.home.abbrev || '', score.away.abbrev || '')}
+                ${generateWinProbGraph(historyData, homeTeam, awayTeam, homeProb, awayProb, (gameState === 'LIVE' || gameState === 'CRIT'), homeLogo, awayLogo, score.home.abbrev || '', score.away.abbrev || '')}
             </div>
         </div>
 
@@ -648,20 +686,24 @@ async function displayResults(data) {
     // Stop any existing polling before starting new one
     stopPlayByPlayPolling();
     stopLiveScorePolling();
-    currentGameId = gameId;
-    currentGameIsLive = gameIsLive;
+    // currentGameId and currentGameIsLive are already set earlier (lines 108-109) based on game_state
+    // Update currentGameIsLive again here to ensure it matches the actual game_state (not just is_live flag)
+    // This is important because game.is_live might not accurately reflect game_state
+    currentGameIsLive = (gameState === 'LIVE' || gameState === 'CRIT');
     currentHomeTeam = homeTeam;
     currentAwayTeam = awayTeam;
     currentHomeLogo = homeLogo;
     currentAwayLogo = awayLogo;
     
     // Start live score polling if game is live (always keep scoreboard and times updated)
-    if (gameIsLive) {
+    // Use currentGameIsLive (based on game_state) instead of gameIsLive (based on is_live flag)
+    if (currentGameIsLive) {
         startLiveScorePolling(gameId);
     }
     
     // Always load play-by-play (will fetch fresh data immediately)
-    loadPlayByPlay(gameId, homeTeam, awayTeam, homeLogo, awayLogo, gameIsLive);
+    // Use currentGameIsLive (based on game_state) to ensure accurate live status
+    loadPlayByPlay(gameId, homeTeam, awayTeam, homeLogo, awayLogo, currentGameIsLive);
     gameDetails.style.display = 'block';
     gameDetails.classList.add('show');
     gameDetails.scrollIntoView({ behavior: 'smooth' });

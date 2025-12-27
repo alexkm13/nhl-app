@@ -111,7 +111,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # These endpoints are polled every 500ms-1s by the frontend for live games
         path = request.url.path
         if path.startswith("/v1/games/") and (
-            "/playbyplay" in path or 
+            "/playbyplay" in path or
             "/winprob" in path or
             path.endswith("/status")
         ):

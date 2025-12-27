@@ -41,7 +41,7 @@ class ABTestAnalyzer:
 
             with psycopg.connect(self.db_url) as conn:
                 query = """
-                    SELECT 
+                    SELECT
                         variant_name,
                         model_id,
                         COUNT(*) as prediction_count,
@@ -161,7 +161,7 @@ class ABTestAnalyzer:
 
             with psycopg.connect(self.db_url) as conn:
                 query = """
-                    SELECT 
+                    SELECT
                         DATE_TRUNC('minute', timestamp) as time_bucket,
                         variant_name,
                         COUNT(*) as prediction_count,

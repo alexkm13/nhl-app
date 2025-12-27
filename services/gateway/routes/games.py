@@ -1,13 +1,21 @@
 """Game-related API routes."""
 
 import asyncio
+import logging
 import os
+import sys
 import time
 from datetime import datetime
 
 import psycopg
 from fastapi import APIRouter, HTTPException
 from redis.asyncio import Redis
+
+# Add parent directory to path for common imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+from common.logging_config import setup_logger
+
+logger = setup_logger("gateway.routes.games", level=logging.INFO)
 
 from nhl_api import (
     fetch_nhl_boxscore,
@@ -91,18 +99,26 @@ async def list_games(date: str = None):
                     # Try to get time from periodDescriptor first (most current for live games)
                     is_time_remaining = False
                     if period_descriptor:
+                        # timeRemaining is the official remaining time field
                         if period_descriptor.get("timeRemaining"):
                             time_in_period = period_descriptor.get("timeRemaining")
                             is_time_remaining = True
-                        elif period_descriptor.get("timeInPeriod"):
-                            time_in_period = period_descriptor.get("timeInPeriod")
-                            is_time_remaining = True
+                            print(f"[DEBUG] Game {game_id}: Using timeRemaining = {time_in_period}")
+                        # clock is typically remaining time in MM:SS format
                         elif period_descriptor.get("clock"):
                             time_in_period = period_descriptor.get("clock")
                             is_time_remaining = True
+                            print(f"[DEBUG] Game {game_id}: Using clock = {time_in_period}")
+                        # timeInPeriod might be elapsed or remaining - NHL API is inconsistent
+                        # Based on testing, this appears to be remaining time in live games
+                        elif period_descriptor.get("timeInPeriod"):
+                            time_in_period = period_descriptor.get("timeInPeriod")
+                            is_time_remaining = True
+                            print(f"[DEBUG] Game {game_id}: Using timeInPeriod = {time_in_period}")
                         elif period_descriptor.get("time"):
                             time_in_period = period_descriptor.get("time")
                             is_time_remaining = True
+                            print(f"[DEBUG] Game {game_id}: Using time = {time_in_period}")
 
                     # If not found in periodDescriptor, try to get from boxscore for more current time
                     if not time_in_period:
@@ -124,21 +140,26 @@ async def list_games(date: str = None):
                                             "timeRemaining"
                                         )
                                         is_time_remaining = True
+                                        print(f"[DEBUG] Game {game_id}: Using boxscore timeRemaining = {time_in_period}")
+                                    elif boxscore_period.get("clock"):
+                                        time_in_period = boxscore_period.get("clock")
+                                        is_time_remaining = True
+                                        print(f"[DEBUG] Game {game_id}: Using boxscore clock = {time_in_period}")
                                     elif boxscore_period.get("timeInPeriod"):
                                         time_in_period = boxscore_period.get(
                                             "timeInPeriod"
                                         )
                                         is_time_remaining = True
-                                    elif boxscore_period.get("clock"):
-                                        time_in_period = boxscore_period.get("clock")
-                                        is_time_remaining = True
+                                        print(f"[DEBUG] Game {game_id}: Using boxscore timeInPeriod = {time_in_period}")
                                     elif boxscore_period.get("time"):
                                         time_in_period = boxscore_period.get("time")
                                         is_time_remaining = True
+                                        print(f"[DEBUG] Game {game_id}: Using boxscore time = {time_in_period}")
                         except Exception:
                             pass
 
                     # If still not found, get from most recent play
+                    # Note: timeInPeriod from plays is typically ELAPSED time
                     if not time_in_period:
                         plays = game.get("plays", [])
                         if plays:
@@ -146,12 +167,19 @@ async def list_games(date: str = None):
                                 play_time = play.get("timeInPeriod", None)
                                 if play_time:
                                     time_in_period = play_time
+                                    # Mark as elapsed time (will be converted by frontend)
+                                    is_time_remaining = False
                                     play_period = play.get("periodDescriptor", {}).get(
                                         "number", None
                                     )
                                     if play_period:
                                         period = play_period
+                                    print(f"[DEBUG] Game {game_id}: Using play timeInPeriod (elapsed) = {time_in_period}")
                                     break
+
+                    # Final debug log
+                    if not time_in_period:
+                        print(f"[DEBUG] Game {game_id}: No time found, will default to 20:00")
 
                 # Track completed games to check OT/SO status
                 if game_state in ["OFF", "FINAL"]:
@@ -261,9 +289,7 @@ async def start_game_ingestion(game_id: str):
             try:
                 task.result()
             except Exception as e:
-                print(f"[gateway] Uncaught exception in background ingestion task: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.error(f"Uncaught exception in background ingestion task: {e}", exc_info=True)
 
         task.add_done_callback(handle_task_exception)
 
@@ -298,9 +324,8 @@ async def refresh_game_predictions(game_id: str):
                 "status": "skipped",
             }
 
-        # Get last processed event timestamp
-        last_event_ts = await r.get(f"last_event_ts:{game_id}")
-        last_ts = float(last_event_ts) if last_event_ts else 0
+        # Get last processed event timestamp (stored for reference)
+        await r.get(f"last_event_ts:{game_id}")
 
         # Process only new events
         plays = game_data.get("plays", [])
@@ -450,17 +475,17 @@ async def get_winprob(game_id: str):
         p_home_win_val = data.get("p_home_win")
         model_id_val = data.get("model_id")
         ts_val = data.get("ts")
-        
+
         # Check if required fields are missing, empty, or invalid strings
         # Handle cases where Redis returns "None" as a string or empty strings
-        if (not game_id_val or 
-            not p_home_win_val or 
-            not model_id_val or 
-            ts_val is None or 
-            ts_val == "" or 
-            ts_val.lower() == "none"):
+        if (not game_id_val or
+                not p_home_win_val or
+                not model_id_val or
+                ts_val is None or
+                ts_val == "" or
+                ts_val.lower() == "none"):
             raise HTTPException(status_code=404, detail="No prediction yet for this game")
-        
+
         # Convert to appropriate types with error handling
         try:
             p_home_win_float = float(p_home_win_val)
@@ -474,10 +499,10 @@ async def get_winprob(game_id: str):
         except (ValueError, TypeError) as e:
             # Handle cases where ts might be "None", empty string, or invalid
             raise HTTPException(
-                status_code=500, 
+                status_code=500,
                 detail=f"Invalid prediction data format: {str(e)}. Prediction may be incomplete."
             )
-        
+
         return WinProb(
             game_id=game_id_val,
             p_home_win=p_home_win_float,
@@ -512,67 +537,102 @@ async def get_winprob_history(game_id: str):
                 except Exception:
                     pass
 
-        async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    """
-                    SELECT ts, p_home_win 
-                    FROM predictions 
-                    WHERE game_id = %s 
-                    ORDER BY ts ASC
-                    """,
-                    (game_id,),
-                )
-                rows = await cur.fetchall()
+        # Use connection pool if available, otherwise fall back to direct connection
+        from db_pool import get_db_connection, get_db_pool
 
-                # Calculate relative time (seconds elapsed from game start)
-                # Filter out invalid timestamps (e.g., 1970-01-01 from old bug)
-                data = []
-                for ts, p_home_win in rows:
-                    # Skip NULL or invalid values
-                    if ts is None or p_home_win is None:
-                        continue
+        db_pool = get_db_pool()
+        if db_pool:
+            async with get_db_connection() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """
+                        SELECT ts, p_home_win
+                        FROM predictions
+                        WHERE game_id = %s
+                        ORDER BY ts ASC
+                        """,
+                        (game_id,),
+                    )
+                    rows = await cur.fetchall()
 
-                    try:
-                        ts_timestamp = float(ts.timestamp())
-                        p_home_win_float = float(p_home_win)
-                    except (AttributeError, TypeError, ValueError):
-                        # Skip invalid data types
-                        continue
+                    # Calculate relative time (seconds elapsed from game start)
+                    # Filter out invalid timestamps (e.g., 1970-01-01 from old bug)
+                    data = []
+                    for ts, p_home_win in rows:
+                        # Skip NULL or invalid values
+                        if ts is None or p_home_win is None:
+                            continue
 
-                    # Skip timestamps that are clearly wrong (before 2020 or way in future)
-                    # Valid predictions should be recent (after 2020)
-                    if ts_timestamp < 1577836800:  # Before 2020-01-01
-                        continue
-                    # Tighten future timestamp check - not allow future times (only allow small buffer for clock skew)
-                    current_time = time.time()
-                    if ts_timestamp > current_time + 60:  # More than 60 seconds in future (allow small clock skew)
-                        continue
+                        try:
+                            ts_timestamp = float(ts.timestamp())
+                            p_home_win_float = float(p_home_win)
+                        except (AttributeError, TypeError, ValueError):
+                            # Skip invalid data types
+                            continue
 
-                    if game_start_ts:
-                        relative_time = ts_timestamp - game_start_ts
-                        # Only include predictions that occurred during or after game start
-                        # Allow some leeway for predictions slightly before game start
-                        if relative_time >= -300:  # Allow 5 minutes before game start
+                        # Skip timestamps that are clearly wrong (before 2020 or way in future)
+                        # Valid predictions should be recent (after 2020)
+                        if ts_timestamp < 1577836800:  # Before 2020-01-01
+                            continue
+                        # Tighten future timestamp check - not allow future times (only allow small buffer for clock skew)
+                        current_time = time.time()
+                        if ts_timestamp > current_time + 60:  # More than 60 seconds in future (allow small clock skew)
+                            continue
+
+                        if game_start_ts:
+                            relative_time = ts_timestamp - game_start_ts
+                            # Only include predictions that occurred during or after game start
+                            # Allow some leeway for predictions slightly before game start
+                            if relative_time >= -300:  # Allow 5 minutes before game start
+                                data.append(
+                                    {
+                                        "ts": max(0, relative_time),
+                                        "p_home_win": p_home_win_float,
+                                    }
+                                )
+                        else:
+                            # No game start time available - use timestamp as-is if reasonable
+                            # This shouldn't happen in normal operation
                             data.append(
-                                {
-                                    "ts": max(0, relative_time),
-                                    "p_home_win": p_home_win_float,
-                                }
+                                {"ts": ts_timestamp, "p_home_win": p_home_win_float}
                             )
-                    else:
-                        # No game start time available - use timestamp as-is if reasonable
-                        # This shouldn't happen in normal operation
-                        data.append(
-                            {"ts": ts_timestamp, "p_home_win": p_home_win_float}
-                        )
 
-                return {"game_id": game_id, "data": data}
+                    return {"game_id": game_id, "data": data}
+        else:
+            # Fallback to direct connection if pool not available
+            async with await psycopg.AsyncConnection.connect(DATABASE_URL) as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        """
+                        SELECT ts, p_home_win
+                        FROM predictions
+                        WHERE game_id = %s
+                        ORDER BY ts ASC
+                        """,
+                        (game_id,),
+                    )
+                    rows = await cur.fetchall()
+                    # Process rows same as above (simplified for fallback)
+                    data = []
+                    for ts, p_home_win in rows:
+                        if ts is None or p_home_win is None:
+                            continue
+                        try:
+                            ts_timestamp = float(ts.timestamp())
+                            p_home_win_float = float(p_home_win)
+                            if ts_timestamp < 1577836800 or ts_timestamp > time.time() + 60:
+                                continue
+                            if game_start_ts:
+                                relative_time = ts_timestamp - game_start_ts
+                                if relative_time >= -300:
+                                    data.append({"ts": max(0, relative_time), "p_home_win": p_home_win_float})
+                            else:
+                                data.append({"ts": ts_timestamp, "p_home_win": p_home_win_float})
+                        except (AttributeError, TypeError, ValueError):
+                            continue
+                    return {"game_id": game_id, "data": data}
     except Exception as e:
-        print(f"[gateway] Error fetching win probability history: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error(f"Error fetching win probability history for game {game_id}: {e}", exc_info=True)
         return {"game_id": game_id, "data": []}
 
 
@@ -643,7 +703,7 @@ async def get_game_rosters(game_id: str):
             },
         }
     except Exception as e:
-        print(f"[gateway] Error fetching rosters: {e}")
+        logger.error(f"Error fetching rosters for game {game_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching rosters: {str(e)}")
 
 
@@ -900,7 +960,7 @@ async def get_powerplay_status(game_id: str):
             }
 
     except Exception as e:
-        print(f"[gateway] Error getting power play status: {e}")
+        logger.error(f"Error getting power play status for game {game_id}: {e}", exc_info=True)
         return {
             "is_powerplay": False,
             "team": None,
@@ -1050,7 +1110,7 @@ async def get_game_stats(game_id: str):
                 else:
                     return 0.0, 0.0
             except Exception as e:
-                print(f"[gateway] Error calculating faceoff percentage: {e}")
+                logger.error(f"Error calculating faceoff percentage for game {game_id}: {e}", exc_info=True)
                 return 0, 0
 
         # Get team IDs for faceoff calculation
@@ -1171,12 +1231,10 @@ async def get_game_stats(game_id: str):
                                 if timestamp_key:
                                     penalty_times[timestamp_key] = {"team": "away"}
 
-                print(
-                    f"[gateway] Calculated PP opportunities from play-by-play: home={home_pp_opp}, away={away_pp_opp}"
-                )
+                logger.debug(f"Calculated PP opportunities from play-by-play: home={home_pp_opp}, away={away_pp_opp}")
                 return home_pp_opp, away_pp_opp
             except Exception as e:
-                print(f"[gateway] Error calculating power play opportunities: {e}")
+                logger.error(f"Error calculating power play opportunities for game {game_id}: {e}", exc_info=True)
                 return 0, 0
 
         # First, try to get power play opportunities directly from boxscore team stats
@@ -1263,9 +1321,7 @@ async def get_game_stats(game_id: str):
 
         # If not found in team stats, try to calculate from play-by-play
         if home_pp_opp is None or away_pp_opp is None:
-            print(
-                f"[gateway] PP opportunities not in boxscore for game {game_id}, calculating from play-by-play"
-            )
+            logger.debug(f"PP opportunities not in boxscore for game {game_id}, calculating from play-by-play")
             (
                 calculated_home_pp_opp,
                 calculated_away_pp_opp,
@@ -1278,9 +1334,7 @@ async def get_game_stats(game_id: str):
             if away_pp_opp is None:
                 away_pp_opp = calculated_away_pp_opp
         else:
-            print(
-                f"[gateway] Using PP opportunities from boxscore for game {game_id}: home={home_pp_opp}, away={away_pp_opp}"
-            )
+            logger.debug(f"Using PP opportunities from boxscore for game {game_id}: home={home_pp_opp}, away={away_pp_opp}")
 
         # Ensure we have valid integers
         home_pp_opp = int(home_pp_opp) if home_pp_opp is not None else 0
@@ -1324,10 +1378,7 @@ async def get_game_stats(game_id: str):
             "stats": stats,
         }
     except Exception as e:
-        print(f"[gateway] Error fetching game stats: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error(f"Error fetching game stats for game {game_id}: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"Error fetching game stats: {str(e)}"
         )
@@ -1624,10 +1675,7 @@ async def get_player_stats(game_id: str):
         # Re-raise HTTPExceptions (like 404) as-is
         raise
     except Exception as e:
-        print(f"[gateway] Error fetching player stats: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error(f"Error fetching player stats for game {game_id}: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"Error fetching player stats: {str(e)}"
         )
@@ -1637,14 +1685,14 @@ def _get_valid_timestamp(data: dict) -> float:
     """Extract valid timestamp from prediction data, with fallback to current time."""
     timestamp_val = data.get("timestamp")
     ts_val = data.get("ts")
-    
+
     # Try timestamp first (wall-clock time)
     if timestamp_val:
         try:
             return float(timestamp_val)
         except (ValueError, TypeError):
             pass
-    
+
     # Fallback to ts (relative time) - but this is relative, not wall-clock
     # For updated_at, we want wall-clock time, so use current time if ts is relative
     if ts_val:
@@ -1658,7 +1706,7 @@ def _get_valid_timestamp(data: dict) -> float:
             return ts_float
         except (ValueError, TypeError):
             pass
-    
+
     # Final fallback: current time
     return time.time()
 
@@ -1873,7 +1921,7 @@ async def get_winprob_friendly(game_id: str):
         # Validate prediction data before using it
         p_home = None
         p_away = None
-        
+
         # Try to get prediction from Redis data
         p_home_win_val = data.get("p_home_win")
         if p_home_win_val:
@@ -1888,7 +1936,7 @@ async def get_winprob_friendly(game_id: str):
             except (ValueError, TypeError):
                 # Invalid prediction data, will calculate below
                 pass
-        
+
         # If prediction data is invalid or missing, calculate from game state
         if p_home is None:
             p_home = calculate_win_probability(
@@ -2086,6 +2134,6 @@ async def get_winprob_friendly(game_id: str):
         import traceback
         traceback.print_exc()
         raise HTTPException(
-            status_code=500, 
+            status_code=500,
             detail=f"Error retrieving win probability: {str(e)}"
         )

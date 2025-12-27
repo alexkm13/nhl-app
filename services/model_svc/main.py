@@ -453,7 +453,7 @@ async def run_model() -> None:
                         if prediction_event_ts is not None
                         else time.time()
                     )
-                    
+
                     out = {
                         "game_id": game_id,
                         "ts": ts,  # Relative time (seconds elapsed in game)

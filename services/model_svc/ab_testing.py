@@ -156,7 +156,7 @@ class ABTestTracker:
     ):
         """
         Synchronous implementation of log_prediction (runs in executor).
-        
+
         Args:
             game_id: Game identifier
             model_id: Model ID used
@@ -193,14 +193,14 @@ class ABTestTracker:
 
                     # Create index for analysis
                     cur.execute("""
-                        CREATE INDEX IF NOT EXISTS idx_ab_test_game_model 
+                        CREATE INDEX IF NOT EXISTS idx_ab_test_game_model
                         ON ab_test_predictions(game_id, model_id, timestamp)
                     """)
 
                     # Insert prediction
                     cur.execute(
                         """
-                        INSERT INTO ab_test_predictions 
+                        INSERT INTO ab_test_predictions
                         (game_id, model_id, variant_name, prediction, features, timestamp)
                         VALUES (%s, %s, %s, %s, %s, %s)
                     """,
@@ -230,7 +230,7 @@ class ABTestTracker:
     ):
         """
         Log a prediction for A/B testing analysis (async wrapper).
-        
+
         Runs the blocking database call in an executor to avoid stalling the event loop.
 
         Args:
@@ -281,7 +281,7 @@ class ABTestTracker:
             with psycopg.connect(self.db_url) as conn:
                 with conn.cursor() as cur:
                     query = """
-                        SELECT 
+                        SELECT
                             variant_name,
                             model_id,
                             COUNT(*) as prediction_count,

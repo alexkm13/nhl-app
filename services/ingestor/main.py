@@ -19,12 +19,10 @@ from common.constants import (
     NHL_API_TIMEOUT_SECONDS,
     REDIS_DEFAULT_URL,
     STREAM_EVENTS,
-    GROUP_INGESTORS,
     CONSUMER_ID_MIN,
     CONSUMER_ID_MAX,
     SYNTHETIC_GAME_DURATION_SECONDS,
     EVENT_PROCESSING_SLEEP_SECONDS,
-    NHL_EVENT_INGESTION_SLEEP_SECONDS,
     EVENT_WEIGHT_SHOT,
     EVENT_WEIGHT_FACEOFF,
     EVENT_WEIGHT_HIT,
@@ -38,7 +36,6 @@ from common.constants import (
     RINK_X_MAX,
     RINK_Y_MIN,
     RINK_Y_MAX,
-    GAME_PERIOD_DURATION_SECONDS,
 )
 from common.logging_config import setup_logger
 from events import GameEvent

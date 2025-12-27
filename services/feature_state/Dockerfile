@@ -1,10 +1,17 @@
 FROM python:3.11-slim
-WORKDIR /app
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
-# Copy service-specific requirements and install dependencies
-COPY services/feature_state/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+WORKDIR /app
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
+
+# Copy and install Python dependencies
+# Copy requirements first for better layer caching
+COPY services/feature_state/requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy common module (shared across services)
 COPY common/ ./common/
@@ -12,4 +19,10 @@ COPY common/ ./common/
 # Copy service-specific files
 COPY services/feature_state/ ./
 
+# Create non-root user for security
+RUN useradd -m -u 1000 appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
+# Default command
 CMD ["python", "main.py"]
