@@ -1,4 +1,4 @@
-# ScoreCast 🏒
+# ScoreCast 
 
 **Real-time NHL win probability predictions powered by machine learning**
 
@@ -8,7 +8,7 @@ ScoreCast is a production-ready microservices system that processes live NHL gam
 
 ![ScoreCast Dashboard](https://via.placeholder.com/800x400?text=ScoreCast+Dashboard)
 
-## 🌟 Features
+## Features
 
 - **Real-time predictions** - Sub-100ms win probability updates as game events occur
 - **Live WebSocket streaming** - Push updates to clients instantly
@@ -17,7 +17,7 @@ ScoreCast is a production-ready microservices system that processes live NHL gam
 - **Production-ready** - Prometheus metrics, Grafana dashboards, health checks
 - **Event-driven** - Redis Streams with consumer groups for reliable processing
 
-## 📀 Installation
+## Installation
 
 ### Quick Start with Docker
 
@@ -52,7 +52,7 @@ python -m services.feature_state.main
 python -m services.model_svc.main
 ```
 
-## 🎮 Usage
+## Usage
 
 ### Get Win Probability for a Game
 
@@ -77,7 +77,7 @@ curl http://localhost:8000/v1/games/2025020161/winprob
 - **Model Service** - Runs ML inference to generate win probability predictions
 - **Gateway** - FastAPI server providing REST endpoints and WebSocket streaming
 
-## 📊 Monitoring
+## Monitoring
 
 ### Prometheus Metrics
 
@@ -98,7 +98,7 @@ Pre-configured dashboards show:
 
 Access at: http://localhost:3000 (login: `admin/admin`)
 
-## 🔧 Configuration
+## Configuration
 
 Environment variables can be set in `.env` file:
 
@@ -117,7 +117,7 @@ AB_TEST_ENABLED=false
 AB_TEST_CONFIG='{"variants": [...]}'
 ```
 
-## 📦 Dependencies
+## Dependencies
 
 ### Core
 - **fastapi** - Modern async web framework
@@ -133,20 +133,20 @@ AB_TEST_CONFIG='{"variants": [...]}'
 - **mypy** - Type checking
 
 
-## 📜 License
+## License
 
 MIT License - See LICENSE file for details
 
 _Disclaimer: Not affiliated with the NHL._
 
-## 🤝 Contributing
+## Contributing
 
 Contributions welcome! Feel free to:
 - Open issues for bugs or feature requests
 - Submit pull requests
 - Improve documentation
 
-## 📧 Contact
+## Contact
 
 Questions? Open an issue on GitHub!
 
